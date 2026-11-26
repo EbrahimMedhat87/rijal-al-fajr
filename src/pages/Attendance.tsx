@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import MosqueSwitcher from '../components/MosqueSwitcher'
 import { Badge, Banner, Button, Chip, Empty, inputClass } from '../components/ui'
 import { useAppData } from '../lib/app-data'
 import { canManage, useSession } from '../lib/auth'
@@ -21,7 +22,7 @@ type Filter = 'all' | 'todo' | 'done'
 
 export default function Attendance() {
   const session = useSession()
-  const { today, campaign } = useAppData()
+  const { today, campaign, mosques, selectedMosque, mosqueName } = useAppData()
   const { engine, userId, syncNow } = useSync()
   const toast = useToast()
   const online = useOnline()
@@ -33,6 +34,11 @@ export default function Attendance() {
   const [filter, setFilter] = useState<Filter>('all')
 
   const participants = useLive(() => db.participants.toArray())
+  const scoped = useMemo(
+    () => participants?.filter((p) => selectedMosque === 'all' || p.mosque_id === selectedMosque),
+    [participants, selectedMosque]
+  )
+  const showMosque = selectedMosque === 'all' && mosques.length > 1
   const cache = useLive(() => db.attendanceCache.where('date').equals(date).toArray(), [date])
   const ops = useLive(() => db.queue.where('date').equals(date).toArray(), [date])
 
@@ -55,8 +61,8 @@ export default function Attendance() {
   }, [cache, ops])
 
   const list = useMemo(() => {
-    if (!participants) return []
-    return participants
+    if (!scoped) return []
+    return scoped
       .filter((p) => p.active || (info.get(p.id)?.state ?? 'none') !== 'none')
       .filter((p) => matchesQuery(p.name, query))
       .filter((p) => {
@@ -64,13 +70,13 @@ export default function Attendance() {
         return filter === 'all' ? true : filter === 'done' ? done : !done
       })
       .sort((a, b) => a.name.localeCompare(b.name, 'ar'))
-  }, [participants, info, query, filter])
+  }, [scoped, info, query, filter])
 
-  const activeCount = participants?.filter((p) => p.active).length ?? 0
-  const presentCount = useMemo(
-    () => [...info.entries()].filter(([, v]) => v.state === 'synced' || v.state === 'pending').length,
-    [info]
-  )
+  const activeCount = scoped?.filter((p) => p.active).length ?? 0
+  const presentCount = useMemo(() => {
+    const ids = new Set((scoped ?? []).map((p) => p.id))
+    return [...info.entries()].filter(([id, v]) => ids.has(id) && (v.state === 'synced' || v.state === 'pending')).length
+  }, [info, scoped])
 
   const mark = async (p: Participant) => {
     const cur = info.get(p.id)?.state ?? 'none'
@@ -109,6 +115,8 @@ export default function Attendance() {
         </div>
       </div>
 
+      <MosqueSwitcher />
+
       {manage && (
         <div className="mb-3 flex items-center gap-2">
           <label className="shrink-0 text-sm font-semibold text-brand-900" htmlFor="att-date">التاريخ</label>
@@ -131,7 +139,7 @@ export default function Attendance() {
         <div className="mb-3"><Banner tone="gold">أنت تسجّل لتاريخ سابق، وليس لليوم.</Banner></div>
       )}
 
-      <div className="sticky z-20 -mx-4 space-y-2 bg-cream/95 px-4 pb-3 pt-2 backdrop-blur" style={{ top: 'var(--header-h, 6.5rem)' }}>
+      <div className="sticky top-0 z-20 -mx-4 -mt-4 space-y-2 bg-cream px-4 pb-3 pt-4">
         <input
           type="search"
           className={inputClass}
@@ -153,7 +161,7 @@ export default function Attendance() {
         <ul className="space-y-2">
           {list.map((p) => {
             const row = info.get(p.id) ?? { state: 'none' as RowState }
-            return <Row key={p.id} p={p} row={row} onMark={() => void mark(p)} />
+            return <Row key={p.id} p={p} row={row} mosque={showMosque ? mosqueName(p.mosque_id) : ''} onMark={() => void mark(p)} />
           })}
         </ul>
       )}
@@ -161,7 +169,7 @@ export default function Attendance() {
   )
 }
 
-function Row({ p, row, onMark }: { p: Participant; row: RowInfo; onMark: () => void }) {
+function Row({ p, row, mosque, onMark }: { p: Participant; row: RowInfo; mosque: string; onMark: () => void }) {
   const disabled = row.state === 'synced' || row.state === 'pending'
   const style = {
     none: 'border-brand-200 bg-white active:bg-brand-50',
@@ -181,6 +189,7 @@ function Row({ p, row, onMark }: { p: Participant; row: RowInfo; onMark: () => v
       >
         <span className="min-w-0">
           <span className="block truncate text-lg font-semibold text-brand-900">{p.name}</span>
+          {mosque && <span className="block text-xs text-brand-700">{mosque}</span>}
           {!p.active && <span className="text-xs text-brand-700">موقوف</span>}
           {row.state === 'synced' && row.op?.serverResult === 'already_recorded' && (
             <span className="block text-xs text-brand-700">سُجِّل مسبقًا من جهاز آخر</span>

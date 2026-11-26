@@ -1,6 +1,9 @@
 import { useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
+import ImportParticipants from '../components/ImportParticipants'
+import MosqueSwitcher from '../components/MosqueSwitcher'
 import { Badge, Banner, Button, Card, Chip, Empty, Field, Modal, PageTitle, inputClass } from '../components/ui'
+import { useAppData } from '../lib/app-data'
 import { canManage, useSession } from '../lib/auth'
 import { addParticipant } from '../lib/data'
 import { db } from '../lib/db'
@@ -14,32 +17,41 @@ export default function Participants() {
   const manage = canManage(session.profile.role)
   const online = useOnline()
   const toast = useToast()
+  const { mosques, selectedMosque, mosqueName } = useAppData()
   const all = useLive(() => db.participants.toArray())
   const [query, setQuery] = useState('')
   const [showInactive, setShowInactive] = useState(false)
   const [adding, setAdding] = useState(false)
+  const [importing, setImporting] = useState(false)
   const [name, setName] = useState('')
+  const [mosqueId, setMosqueId] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [confirmDup, setConfirmDup] = useState(false)
 
+  const activeMosques = mosques.filter((m) => m.active)
+  const addMosque = mosqueId || (selectedMosque !== 'all' ? selectedMosque : activeMosques[0]?.id ?? '')
+  const showMosque = selectedMosque === 'all' && mosques.length > 1
+
   const list = (all ?? [])
+    .filter((p) => selectedMosque === 'all' || p.mosque_id === selectedMosque)
     .filter((p) => (showInactive ? true : p.active))
     .filter((p) => matchesQuery(p.name, query))
     .sort((a, b) => a.name.localeCompare(b.name, 'ar'))
 
-  const dupe = all?.find((p) => normalizeArabic(p.name) === normalizeArabic(name))
+  const dupe = all?.find((p) => p.mosque_id === addMosque && normalizeArabic(p.name) === normalizeArabic(name))
 
   const close = () => {
     setAdding(false)
     setName('')
+    setMosqueId('')
     setError(null)
     setConfirmDup(false)
   }
 
   const submit = async (e: FormEvent) => {
     e.preventDefault()
-    if (!name.trim()) return
+    if (!name.trim() || !addMosque) return
     if (dupe && !confirmDup) {
       setConfirmDup(true)
       return
@@ -47,7 +59,7 @@ export default function Participants() {
     setBusy(true)
     setError(null)
     try {
-      await addParticipant(name)
+      await addParticipant(name, addMosque)
       toast('success', 'تمت إضافة الطفل')
       close()
     } catch (err) {
@@ -61,9 +73,17 @@ export default function Participants() {
     <div>
       <PageTitle
         title="الأطفال"
-        subtitle={all ? `${all.filter((p) => p.active).length} نشط` : undefined}
-        action={manage ? <Button onClick={() => setAdding(true)} disabled={!online}>+ إضافة</Button> : undefined}
+        subtitle={all ? `${list.filter((p) => p.active).length} نشط` : undefined}
+        action={
+          manage ? (
+            <div className="flex gap-2">
+              <Button variant="secondary" onClick={() => setImporting(true)} disabled={!online || activeMosques.length === 0}>📥 استيراد</Button>
+              <Button onClick={() => setAdding(true)} disabled={!online || activeMosques.length === 0}>+ إضافة</Button>
+            </div>
+          ) : undefined
+        }
       />
+      <MosqueSwitcher />
       {manage && !online && <div className="mb-3"><Banner tone="blue">إضافة وتعديل الأطفال تحتاج اتصالًا بالإنترنت.</Banner></div>}
 
       <div className="mb-3 space-y-2">
@@ -83,7 +103,10 @@ export default function Participants() {
           {list.map((p) => (
             <li key={p.id}>
               <Link to={`/participants/${p.id}`} className="flex min-h-14 items-center justify-between rounded-2xl border border-brand-200 bg-white px-4 py-3 active:bg-brand-50">
-                <span className="text-lg font-semibold text-brand-900">{p.name}</span>
+                <span className="min-w-0">
+                  <span className="block truncate text-lg font-semibold text-brand-900">{p.name}</span>
+                  {showMosque && <span className="block text-xs text-brand-700">{mosqueName(p.mosque_id)}</span>}
+                </span>
                 {!p.active && <Badge tone="gray">موقوف</Badge>}
               </Link>
             </li>
@@ -91,10 +114,22 @@ export default function Participants() {
         </ul>
       )}
 
+      {importing && <ImportParticipants defaultMosqueId={addMosque} onClose={() => setImporting(false)} />}
       {adding && (
         <Modal title="إضافة طفل" onClose={close}>
           <form onSubmit={submit} className="space-y-4">
             {error && <Banner tone="red">{error}</Banner>}
+            {activeMosques.length > 1 ? (
+              <Field label="المسجد">
+                <select className={inputClass} value={addMosque} onChange={(e) => { setMosqueId(e.target.value); setConfirmDup(false) }}>
+                  {activeMosques.map((m) => (
+                    <option key={m.id} value={m.id}>{m.name}</option>
+                  ))}
+                </select>
+              </Field>
+            ) : (
+              <div className="text-sm font-semibold text-brand-800">🕌 {mosqueName(addMosque)}</div>
+            )}
             <Field label="اسم الطفل" hint="الاسم فقط — لا نجمع أي بيانات أخرى. لو تشابهت الأسماء أضف حرفًا مميزًا (مثال: محمد أحمد - ع).">
               <input className={inputClass} value={name} maxLength={100} autoFocus required onChange={(e) => { setName(e.target.value); setConfirmDup(false) }} />
             </Field>

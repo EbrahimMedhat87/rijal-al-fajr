@@ -12,6 +12,13 @@ export interface Participant {
   id: string
   name: string
   active: boolean
+  mosque_id: string
+}
+
+export interface Mosque {
+  id: string
+  name: string
+  active: boolean
 }
 
 export interface Profile {
@@ -55,6 +62,7 @@ export interface RankedRow {
   name: string
   active: boolean
   days: number
+  mosqueName?: string
   rank: number | null // null = بدون حضور في الفترة (غير مُرتَّب)
 }
 

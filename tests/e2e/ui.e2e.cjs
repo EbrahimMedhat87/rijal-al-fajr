@@ -29,8 +29,15 @@ const USERS = {
   'rec@x.test': { id: '33333333-3333-3333-3333-333333333333', name: 'مسجل 1', role: 'recorder' }
 }
 const NAMES = ['أحمد', 'محمد', 'يوسف', 'عمر', 'خالد', 'إبراهيم']
+const MA = 'bbbbbbbb-0000-0000-0000-00000000000a' // مسجد النور
+const MB = 'bbbbbbbb-0000-0000-0000-00000000000b' // مسجد الرحمة
+const MOSQUES = [{ id: MA, name: 'مسجد النور', active: true }, { id: MB, name: 'مسجد الرحمة', active: true }]
 const server = {
-  participants: NAMES.map((n, i) => ({ id: `aaaaaaaa-0000-0000-0000-00000000000${i + 1}`, name: n, active: true })),
+  participants: NAMES.map((n, i) => ({ id: `aaaaaaaa-0000-0000-0000-00000000000${i + 1}`, name: n, active: true, mosque_id: i < 5 ? MA : MB })),
+  userMosques: { [USERS['rec@x.test'].id]: [MA] },
+  pending: [{ user_id: '44444444-4444-4444-4444-444444444444', email: 'new@x.test', full_name: 'إداري جديد', requested_mosque: 'مسجد الرحمة', created_at: new Date().toISOString() }],
+  signups: [],
+  upserts: [],
   attendance: [], // {id, participant_id, attendance_date, status, recorded_by, recorded_at, client_op_id, void_reason}
   campaign: { id: 'cccccccc-0000-0000-0000-000000000001', name: 'رجال الفجر', start_date: addDays(TODAY, -60), timezone: 'Africa/Cairo', status: 'active' },
   calls: { record: 0 },
@@ -51,10 +58,11 @@ const jwt = (uid) => `${b64({ alg: 'HS256', typ: 'JWT' })}.${b64({ sub: uid, rol
 let currentUserId = null
 const userById = (id) => Object.values(USERS).find((u) => u.id === id)
 
-function counts(from, to) {
+function counts(from, to, mosqueId = null) {
   return server.participants
+    .filter((p) => !mosqueId || p.mosque_id === mosqueId)
     .map((p) => ({
-      participant_id: p.id, name: p.name, active: p.active,
+      participant_id: p.id, name: p.name, active: p.active, mosque_id: p.mosque_id, mosque_name: MOSQUES.find((m) => m.id === p.mosque_id).name,
       days: server.attendance.filter((a) => a.participant_id === p.id && a.status === 'valid' && a.attendance_date >= from && a.attendance_date <= to).length
     }))
 }
@@ -74,11 +82,31 @@ function handleRpc(name, body, uid) {
   }
   if (name === 'attendance_counts') {
     if (u.role === 'recorder') return { status: 403, json: { message: 'ERR_NOT_AUTHORIZED', code: '42501' } }
-    return { status: 200, json: counts(body.p_from, body.p_to) }
+    return { status: 200, json: counts(body.p_from, body.p_to, body.p_mosque_id) }
+  }
+  if (name === 'mosque_ranking') {
+    if (u.role === 'recorder') return { status: 403, json: { message: 'ERR_NOT_AUTHORIZED', code: '42501' } }
+    const rows = MOSQUES.map((m) => {
+      const c = counts(body.p_from, body.p_to, m.id)
+      const total = c.reduce((a, x) => a + x.days, 0)
+      return { mosque_id: m.id, name: m.name, children: c.length, present: c.filter((x) => x.days > 0).length, total_days: total, avg_days: c.length ? Math.round((total / c.length) * 100) / 100 : 0 }
+    })
+    return { status: 200, json: rows }
   }
   if (name === 'owner_list_users') {
-    return { status: 200, json: Object.entries(USERS).map(([email, x]) => ({ user_id: x.id, email, display_name: x.name, role: x.role, active: true })) }
+    return { status: 200, json: Object.entries(USERS).map(([email, x]) => ({ user_id: x.id, email, display_name: x.name, role: x.role, active: true, created_at: new Date().toISOString(), mosque_ids: server.userMosques[x.id] || [] })) }
   }
+  if (name === 'owner_list_pending_users') return { status: 200, json: server.pending }
+  if (name === 'owner_reject_signup') { server.pending = server.pending.filter((x) => x.user_id !== body.p_user_id); return { status: 200, json: null } }
+  if (name === 'owner_upsert_user') {
+    const pend = server.pending.find((x) => x.email === body.p_email)
+    const id = pend ? pend.user_id : (USERS[body.p_email] || {}).id
+    server.upserts.push(body)
+    USERS[body.p_email] = { id, name: body.p_display_name, role: body.p_role }
+    server.pending = server.pending.filter((x) => x.email !== body.p_email)
+    return { status: 200, json: id }
+  }
+  if (name === 'owner_set_user_mosques') { server.userMosques[body.p_user_id] = body.p_mosque_ids; return { status: 200, json: null } }
   return { status: 404, json: { message: 'unknown rpc ' + name } }
 }
 
@@ -104,6 +132,12 @@ async function setupMock(context, state) {
       currentUserId = u.id
       const tok = jwt(u.id)
       return ok({ access_token: tok, token_type: 'bearer', expires_in: 3600, expires_at: Math.floor(Date.now() / 1000) + 3600, refresh_token: 'r-' + u.id, user: { id: u.id, aud: 'authenticated', role: 'authenticated', email: body.email, app_metadata: {}, user_metadata: {}, created_at: new Date().toISOString() } })
+    }
+    if (path === '/auth/v1/signup') {
+      const body = JSON.parse(req.postData() || '{}')
+      if (body.email === 'dup@x.test') return ok({ code: 422, error_code: 'user_already_exists', msg: 'User already registered', message: 'User already registered' }, 422)
+      server.signups.push(body)
+      return ok({ id: '55555555-5555-5555-5555-555555555555', aud: 'authenticated', role: '', email: body.email, confirmation_sent_at: new Date().toISOString(), app_metadata: {}, user_metadata: body.data || {}, identities: [{ id: 'x' }], created_at: new Date().toISOString() })
     }
     if (path === '/auth/v1/logout') return ok({}, 204)
     if (path === '/auth/v1/user') return ok({ id: currentUserId, email: 'x', aud: 'authenticated', role: 'authenticated' })
@@ -135,14 +169,24 @@ async function setupMock(context, state) {
     if (table === 'campaigns') {
       return wantsObject ? ok(server.campaign) : ok([server.campaign])
     }
+    if (table === 'mosques') {
+      const mine = server.userMosques[uid] || []
+      return ok(MOSQUES.filter((m) => u.role === 'owner' || mine.includes(m.id)))
+    }
+    if (table === 'user_mosques') {
+      const id = eq(url, 'user_id') || uid
+      return ok((server.userMosques[id] || []).map((m) => ({ mosque_id: m })))
+    }
     if (table === 'participants') {
       if (method === 'POST') {
         const b = JSON.parse(req.postData() || '{}')
-        const row = { id: `aaaaaaaa-0000-0000-0000-0000000001${server.participants.length}`, name: b.name, active: true }
-        server.participants.push(row)
-        return wantsObject ? ok(row, 201) : ok([row], 201)
+        const rows = (Array.isArray(b) ? b : [b]).map((x, idx) => ({ id: `aaaaaaaa-1111-0000-0000-${String(server.participants.length + 100 + idx).padStart(12, '0')}`, name: x.name, active: true, mosque_id: x.mosque_id }))
+        rows.forEach((r) => server.participants.push(r))
+        server.bulkCalls = (server.bulkCalls || 0) + 1
+        return wantsObject ? ok(rows[0], 201) : ok(rows, 201)
       }
-      return ok([...server.participants].sort((a, b) => a.name.localeCompare(b.name, 'ar')))
+      const mine = server.userMosques[uid] || []
+      return ok([...server.participants].filter((p) => u.role === 'owner' || mine.includes(p.mosque_id)).sort((a, b) => a.name.localeCompare(b.name, 'ar')))
     }
     if (table === 'attendance') {
       let rows = server.attendance.filter((a) => u.role !== 'recorder' || a.attendance_date >= addDays(TODAY, -1))
@@ -193,8 +237,29 @@ async function login(page, email) {
   await page.goto(BASE + '/login')
   await page.waitForSelector('form')
   check('الصفحة RTL وبلغة عربية', (await page.evaluate(() => [document.documentElement.dir, document.documentElement.lang].join())) === 'rtl,ar')
-  check('لا يوجد رابط/زر لإنشاء حساب (لا تسجيل عام)', (await page.locator('text=/إنشاء حساب|تسجيل جديد|Sign up/i').count()) === 0)
   await page.screenshot({ path: `${SHOTS}/01-login.png` })
+
+  // ---- 1ب) إنشاء حساب ذاتي (منظم جديد)
+  check('شاشة الدخول فيها رابط "منظم جديد؟ أنشئ حسابك"', (await page.locator('text=منظم جديد؟ أنشئ حسابك').count()) === 1)
+  await page.click('text=منظم جديد؟ أنشئ حسابك')
+  check('نموذج الإنشاء يطلب الاسم والمسجد', (await page.locator('form input').count()) === 4)
+  await page.screenshot({ path: `${SHOTS}/01b-signup.png` })
+  const signupForm = async (email) => {
+    const inputs = page.locator('form input')
+    await inputs.nth(0).fill('أحمد الإداري'); await inputs.nth(1).fill('مسجد البحري')
+    await inputs.nth(2).fill(email); await inputs.nth(3).fill('longpass123')
+    await page.click('button[type=submit]')
+  }
+  await signupForm('dup@x.test')
+  await page.waitForSelector('text=مسجّل بالفعل')
+  check('بريد مسجّل مسبقًا: رسالة واضحة', true)
+  await page.reload(); await page.waitForSelector('form'); await page.click('text=منظم جديد؟ أنشئ حسابك')
+  await signupForm('fresh@x.test')
+  await page.waitForSelector('text=تم إنشاء حسابك')
+  check('إنشاء حساب: يُرسَل الاسم والمسجد المطلوب كبيانات للمالك', server.signups.length === 1 && server.signups[0].data.full_name === 'أحمد الإداري' && server.signups[0].data.requested_mosque === 'مسجد البحري', JSON.stringify(server.signups))
+  check('بعد الإنشاء: رسالة نجاح وعودة لوضع الدخول', (await page.locator('button[type=submit]').innerText()).includes('دخول'))
+  await page.screenshot({ path: `${SHOTS}/01c-signup-done.png` })
+  await page.reload(); await page.waitForSelector('form')
 
   // دخول خاطئ
   await page.fill('input[type=email]', 'owner@x.test'); await page.fill('input[type=password]', 'wrong')
@@ -320,6 +385,84 @@ async function login(page, email) {
   check('صفحة الإدارة تعرض المنظمين للمالك', (await page.locator('main').innerText()).includes('rec@x.test'))
   await page.screenshot({ path: `${SHOTS}/11-admin.png` })
 
+  // ---- 9ب) المساجد: الأطفال حسب المسجد
+  await page.goto(BASE + '/participants'); await page.waitForSelector('text=+ إضافة'); await sleep(600)
+  check('المالك يرى شرائح المساجد', (await page.locator('button:has-text("مسجد النور")').count()) === 1 && (await page.locator('button:has-text("مسجد الرحمة")').count()) === 1)
+  check('"كل المساجد": 6 أطفال', (await page.locator('main ul li').count()) === 6)
+  await page.click('button:has-text("مسجد الرحمة")'); await sleep(300)
+  check('تصفية مسجد الرحمة: طفل واحد فقط (إبراهيم)', (await page.locator('main ul li').count()) === 1 && (await page.locator('main ul li').innerText()).includes('إبراهيم'))
+
+  // ---- 9ج) استيراد قائمة أسماء (كشف جاهز) إلى مسجد الرحمة
+  await page.click('button:has-text("استيراد")')
+  await page.waitForSelector('textarea')
+  const pasted = [
+    'سجل الغياب - أسرة الفجر - مسجد الرحمة',
+    'الاسم م',
+    '✓ ✓ ✓  علي حسن محمود  ١',
+    '✗ ✓ ✓  سعيد عبد الله  ٢',
+    '3- علي  حسن محمود',
+    'إبراهيم',
+    'احمد',
+    '',
+    '٤. ياسين أشرف'
+  ].join('\n')
+  await page.fill('textarea', pasted)
+  check('زر المعاينة يعرض عدد الأسماء المنظّفة (6)', (await page.locator('button:has-text("معاينة")').innerText()).includes('6'), await page.locator('button:has-text("معاينة")').innerText())
+  await page.click('button:has-text("معاينة")')
+  await page.waitForSelector('ul[aria-label="معاينة الأسماء"]')
+  const prevItems = await page.locator('ul[aria-label="معاينة الأسماء"] li').evaluateAll((els) => els.map((e) => ({ t: e.innerText.replace(/\s+/g, ' ').trim(), on: e.querySelector('input').checked })))
+  console.log('   معاينة الاستيراد:', JSON.stringify(prevItems))
+  const byName = (n) => prevItems.find((x) => x.t.startsWith(n))
+  check('المعاينة: الجدد محددون (علي، سعيد، ياسين)', byName('علي حسن محمود')?.on && byName('سعيد عبد الله')?.on && byName('ياسين أشرف')?.on)
+  check('المعاينة: "إبراهيم" موجود بالفعل → غير محدد', byName('إبراهيم') && !byName('إبراهيم').on && byName('إبراهيم').t.includes('موجود بالفعل'))
+  check('المعاينة: "احمد" عند مسجد آخر → غير محدد مع اسم المسجد', byName('احمد') && !byName('احمد').on && byName('احمد').t.includes('مسجد النور'))
+  check('المعاينة: التكرار داخل القائمة يُكتشف ويُستبعد (علي حسن محمود مرتين)', prevItems.length === 6 && prevItems.filter((x) => x.t.includes('مكرر في القائمة') && !x.on).length === 1, JSON.stringify(prevItems))
+  await page.screenshot({ path: `${SHOTS}/10b-import-preview.png` })
+  const addBtn = await page.locator('button:has-text("إضافة 3 طفل")').count()
+  check('زر الإضافة يعرض عدد المحدد (3)', addBtn === 1)
+  const nBefore = server.participants.length
+  await page.click('button:has-text("إضافة 3 طفل")')
+  await page.waitForSelector('text=تمت إضافة 3 طفل', { timeout: 5000 })
+  await sleep(600)
+  const added = server.participants.slice(nBefore)
+  check('الاستيراد: 3 أطفال أُضيفوا في طلب واحد لمسجد الرحمة', added.length === 3 && added.every((x) => x.mosque_id === MB) && server.bulkCalls === 1, JSON.stringify(added))
+  check('الاستيراد: الأسماء نظيفة (بلا أرقام/علامات)', added.map((x) => x.name).sort().join('|') === ['سعيد عبد الله', 'علي حسن محمود', 'ياسين أشرف'].sort().join('|'), added.map((x) => x.name).join('|'))
+  check('القائمة تحدّثت: 4 أطفال في مسجد الرحمة', (await page.locator('main ul li').count()) === 4, (await page.locator('main ul li').evaluateAll((e) => e.map((x) => x.innerText.replace(/\s+/g, ' ')))).join('|'))
+
+  // رفع ملف CSV
+  await page.click('button:has-text("استيراد")'); await page.waitForSelector('textarea')
+  await page.setInputFiles('input[type=file]', { name: 'names.csv', mimeType: 'text/csv', buffer: Buffer.from('﻿الاسم,م\nكريم سامح,1\nزياد علاء,2\n', 'utf8') })
+  await sleep(300)
+  check('رفع CSV: يقرأ الأسماء بالعربية (معاينة 2)', (await page.locator('button:has-text("معاينة")').innerText()).includes('2'), await page.locator('button:has-text("معاينة")').innerText())
+  await page.click('button[aria-label="إغلاق"]')
+
+  // ---- 9د) ترتيب المساجد
+  await page.goto(BASE + '/rankings'); await page.waitForSelector('text=ترتيب المساجد'); await sleep(500)
+  await page.click('button:has-text("منذ البداية")'); await sleep(500)
+  await page.click('button:has-text("ترتيب المساجد")'); await sleep(900)
+  const mrows = await page.locator('ol li').evaluateAll((els) => els.map((e) => e.innerText.replace(/\s+/g, ' ').trim()))
+  console.log('   ترتيب المساجد:', mrows.join(' | '))
+  check('ترتيب المساجد: صفان والنور أولًا (أعلى متوسط)', mrows.length === 2 && mrows[0].includes('مسجد النور') && mrows[0].startsWith('1'), mrows.join(' | '))
+  await page.screenshot({ path: `${SHOTS}/09b-mosque-ranking.png` })
+  await page.click('button:has-text("ترتيب الأطفال")'); await sleep(600)
+  await page.click('button:has-text("مسجد الرحمة")'); await sleep(900)
+  const crow = await page.locator('ol li').evaluateAll((els) => els.map((e) => e.innerText.replace(/\s+/g, ' ').trim()))
+  check('ترتيب الأطفال مع تصفية مسجد: أطفال الرحمة فقط', crow.length === 4 && crow.every((t) => !t.includes('أحمد')), crow.join(' | '))
+
+  // ---- 9هـ) طلبات التسجيل: قبول وربط بمسجد
+  await page.goto(BASE + '/admin'); await page.waitForSelector('text=طلبات تسجيل جديدة'); await sleep(400)
+  const pendTxt = await page.locator('main').innerText()
+  check('الإدارة: طلب التسجيل يظهر بالاسم والبريد والمسجد المطلوب', pendTxt.includes('إداري جديد') && pendTxt.includes('new@x.test') && pendTxt.includes('مسجد الرحمة'))
+  await page.screenshot({ path: `${SHOTS}/11b-pending.png` })
+  await page.click('button:has-text("قبول")'); await page.waitForSelector('[role=dialog]')
+  const dlg = page.locator('[role=dialog]')
+  check('نموذج القبول معبّأ مسبقًا (الاسم/البريد) والمسجد المقترح محدد', (await dlg.locator('input[type=email]').inputValue()) === 'new@x.test' && (await dlg.locator('label:has-text("مسجد الرحمة") input').isChecked()) && !(await dlg.locator('label:has-text("مسجد النور") input').isChecked()))
+  await page.screenshot({ path: `${SHOTS}/11c-approve.png` })
+  await dlg.locator('button[type=submit]').click(); await sleep(900)
+  check('القبول: الدور مشرف + ربط بمسجد الرحمة فقط', server.upserts.length === 1 && server.upserts[0].p_role === 'admin' && JSON.stringify(server.userMosques['44444444-4444-4444-4444-444444444444']) === JSON.stringify([MB]), JSON.stringify([server.upserts, server.userMosques]))
+  const afterTxt = await page.locator('main').innerText()
+  check('بعد القبول: يختفي من الطلبات ويظهر في المنظمين', (await page.locator('h2:has-text("طلبات تسجيل جديدة")').count()) === 0 && afterTxt.includes('new@x.test'), JSON.stringify({ hasPendingTitle: afterTxt.includes('طلبات تسجيل جديدة'), hasEmail: afterTxt.includes('new@x.test'), pending: server.pending.length }))
+
   // ---- 10) تسجيل الخروج ثم مسجِّل (Recorder)
   await page.click('button[aria-label="القائمة"]')
   page.once('dialog', (d) => d.accept())
@@ -337,6 +480,10 @@ async function login(page, email) {
   check('Recorder: /admin يعيده للرئيسية', new URL(page.url()).pathname === '/')
   await page.goto(BASE + '/attendance'); await page.waitForSelector('button:has-text("أحمد")')
   check('Recorder: لا يوجد منتقي تاريخ (اليوم فقط)', (await page.locator('input[type=date]').count()) === 0)
+  check('Recorder (مسجد واحد): لا شرائح مساجد، يرى اسم مسجده فقط', (await page.locator('main').innerText()).includes('مسجد النور') && (await page.locator('button:has-text("كل المساجد")').count()) === 0)
+  check('Recorder: يرى أطفال مسجد النور فقط (5) ولا يرى أطفال الرحمة', (await page.locator('main li').count()) === 5 && (await page.locator('main').innerText()).includes('أحمد') && !(await page.locator('main').innerText()).includes('إبراهيم'))
+  await page.goto(BASE + '/participants'); await page.waitForSelector('main ul li')
+  check('Recorder: لا زر إضافة ولا استيراد', (await page.locator('button:has-text("استيراد")').count()) === 0 && (await page.locator('button:has-text("+ إضافة")').count()) === 0)
   await page.screenshot({ path: `${SHOTS}/12-recorder.png` })
 
   // ---- 11) لا أخطاء JS غير متوقعة

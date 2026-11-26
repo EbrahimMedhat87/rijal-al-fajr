@@ -48,3 +48,34 @@ describe('rankParticipants — competition ranking', () => {
     expect(totalDays([])).toBe(0)
   })
 })
+
+import { rankMosques, type MosqueScoreRow } from '../src/lib/ranking'
+
+const mrow = (name: string, children: number, totalDays: number): MosqueScoreRow => ({
+  mosqueId: name,
+  name,
+  children,
+  present: totalDays > 0 ? 1 : 0,
+  totalDays,
+  avgDays: children ? Math.round((totalDays / children) * 100) / 100 : 0
+})
+
+describe('rankMosques — ترتيب المساجد بالمتوسط', () => {
+  it('المسجد الصغير النشيط يتفوق على الكبير الأقل نشاطًا (متوسط لا إجمالي)', () => {
+    const r = rankMosques([mrow('الكبير', 80, 400), mrow('الصغير', 20, 150)]) // 5.00 مقابل 7.50
+    expect(r.map((x) => x.name)).toEqual(['الصغير', 'الكبير'])
+    expect(r.map((x) => x.rank)).toEqual([1, 2])
+  })
+  it('تعادل المتوسط يعطي نفس المركز والتالي 3', () => {
+    const r = rankMosques([mrow('أ', 10, 50), mrow('ب', 20, 100), mrow('ج', 10, 20)])
+    expect(r.map((x) => x.rank)).toEqual([1, 1, 3])
+  })
+  it('مسجد بلا حضور غير مُرتَّب ويأتي آخرًا', () => {
+    const r = rankMosques([mrow('فارغ', 10, 0), mrow('نشيط', 10, 30)])
+    expect(r[0]).toMatchObject({ name: 'نشيط', rank: 1 })
+    expect(r[1]).toMatchObject({ name: 'فارغ', rank: null })
+  })
+  it('قائمة فارغة', () => {
+    expect(rankMosques([])).toEqual([])
+  })
+})

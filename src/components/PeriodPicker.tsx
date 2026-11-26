@@ -28,7 +28,7 @@ export default function PeriodPicker({
 
   return (
     <div className="space-y-3">
-      <div className="flex gap-2 overflow-x-auto" role="tablist">
+      <div className="flex flex-wrap gap-2" role="tablist">
         {kinds.map((k) => (
           <Chip key={k} active={value.kind === k} onClick={() => onChange({ ...value, kind: k })}>
             {KIND_LABEL[k]}

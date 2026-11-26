@@ -69,8 +69,8 @@ export default function Layout() {
   }
 
   return (
-    <div className="mx-auto flex min-h-screen max-w-2xl flex-col">
-      <header ref={headerRef} className="safe-top sticky top-0 z-30 border-b border-brand-800 bg-brand-900 text-white">
+    <div className="mx-auto flex h-dvh max-w-2xl flex-col overflow-hidden bg-cream">
+      <header ref={headerRef} className="safe-top z-30 shrink-0 border-b border-brand-800 bg-brand-900 text-white">
         <div className="flex items-center justify-between gap-2 px-4 py-3">
           <div className="min-w-0">
             <div className="truncate text-lg font-bold">🌙 {campaign?.name ?? 'رجال الفجر'}</div>
@@ -87,7 +87,7 @@ export default function Layout() {
         </div>
       </header>
 
-      <main className="flex-1 px-4 pb-28 pt-4">
+      <main className="min-w-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain px-4 pb-6 pt-4">
         {session.offlineMode && (
           <div className="mb-3">
             <Banner tone="blue">أنت تعمل بدون اتصال. يمكنك تسجيل الحضور وسيُحفَظ على هذا الجهاز ويُرسَل تلقائيًا عند عودة الإنترنت.</Banner>
@@ -101,7 +101,7 @@ export default function Layout() {
         <Outlet />
       </main>
 
-      <nav className="safe-bottom fixed inset-x-0 bottom-0 z-30 border-t border-brand-200 bg-white" aria-label="التنقل الرئيسي">
+      <nav className="safe-bottom z-30 shrink-0 border-t border-brand-200 bg-white" aria-label="التنقل الرئيسي">
         <ul className="mx-auto flex max-w-2xl">
           {nav.map((n) => (
             <li key={n.to} className="flex-1">

@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import PeriodPicker from '../components/PeriodPicker'
-import { Banner, Button, Card, PageTitle, Spinner } from '../components/ui'
+import { Banner, Button, Card, Chip, PageTitle, Spinner } from '../components/ui'
 import { useAppData } from '../lib/app-data'
 import { downloadCsv, toCsv } from '../lib/csv'
 import { fetchAttendanceRange, fetchCounts, fetchProfileNames } from '../lib/data'
@@ -12,11 +12,12 @@ import { rankParticipants } from '../lib/ranking'
 import { db } from '../lib/db'
 
 export default function Reports() {
-  const { today, campaign } = useAppData()
+  const { today, campaign, allMosques, mosqueName } = useAppData()
   const online = useOnline()
   const [period, setPeriod] = useState<PeriodState>(() => defaultPeriod(today, 'day'))
   const [busy, setBusy] = useState<'summary' | 'detail' | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [mosque, setMosque] = useState<string>('all')
   const [summary, setSummary] = useState<{ present: number; active: number; absent: string[] } | null>(null)
 
   const resolved = useMemo(() => (campaign ? resolvePeriod(period, campaign.start_date, today) : null), [period, campaign, today])
@@ -24,17 +25,19 @@ export default function Reports() {
   const tz = campaign.timezone
   const range = resolved?.range ?? null
   const slug = periodSlug(period)
+  const mosqueId = mosque === 'all' ? null : mosque
+  const activeMosques = allMosques.filter((m) => m.active)
 
   const exportSummary = async () => {
     if (!range) return
     setBusy('summary')
     setError(null)
     try {
-      const counts = await fetchCounts(range)
-      const ranked = rankParticipants(counts.map((c) => ({ participantId: c.participant_id, name: c.name, active: c.active, days: c.days })))
+      const counts = await fetchCounts(range, mosqueId)
+      const ranked = rankParticipants(counts.map((c) => ({ participantId: c.participant_id, name: c.name, active: c.active, days: c.days, mosqueName: c.mosque_name })))
       const csv = toCsv(
-        ['الترتيب', 'الاسم', 'عدد أيام الحضور', 'الحالة', 'من', 'إلى'],
-        ranked.map((r) => [r.rank ?? '', r.name, r.days, r.active ? 'نشط' : 'موقوف', range.from, range.to])
+        ['الترتيب', 'الاسم', 'المسجد', 'عدد أيام الحضور', 'الحالة', 'من', 'إلى'],
+        ranked.map((r) => [r.rank ?? '', r.name, r.mosqueName ?? '', r.days, r.active ? 'نشط' : 'موقوف', range.from, range.to])
       )
       downloadCsv(`rijal-al-fajr-summary-${slug}.csv`, csv)
     } catch (e) {
@@ -50,12 +53,14 @@ export default function Reports() {
     setError(null)
     try {
       const [rows, names, parts] = await Promise.all([fetchAttendanceRange(range), fetchProfileNames(), db.participants.toArray()])
-      const pn = new Map(parts.map((p) => [p.id, p.name]))
+      const pn = new Map(parts.map((p) => [p.id, p]))
+      const scopedRows = rows.filter((r) => !mosqueId || pn.get(r.participant_id)?.mosque_id === mosqueId)
       const csv = toCsv(
-        ['التاريخ', 'الاسم', 'الحالة', 'سجّله', `وقت التسجيل (${tz})`, 'سبب الإبطال'],
-        rows.map((r) => [
+        ['التاريخ', 'الاسم', 'المسجد', 'الحالة', 'سجّله', `وقت التسجيل (${tz})`, 'سبب الإبطال'],
+        scopedRows.map((r) => [
           r.attendance_date,
-          pn.get(r.participant_id) ?? r.participant_id,
+          pn.get(r.participant_id)?.name ?? r.participant_id,
+          mosqueName(pn.get(r.participant_id)?.mosque_id ?? ''),
           r.status === 'valid' ? 'صالح' : 'مُبطَل',
           names[r.recorded_by] ?? '',
           formatDateTimeInTz(r.recorded_at, tz),
@@ -75,7 +80,7 @@ export default function Reports() {
     setBusy('summary')
     setError(null)
     try {
-      const counts = await fetchCounts(range)
+      const counts = await fetchCounts(range, mosqueId)
       const present = counts.filter((c) => c.days > 0)
       setSummary({
         present: present.length,
@@ -93,6 +98,15 @@ export default function Reports() {
     <div className="space-y-4">
       <PageTitle title="التقارير" subtitle="ملخصات وتصدير CSV" />
       <PeriodPicker value={period} onChange={(p) => { setPeriod(p); setSummary(null) }} kinds={['day', 'month', 'quarter', 'all']} minDate={campaign.start_date} maxDate={today} />
+
+      {activeMosques.length > 1 && (
+        <div className="flex flex-wrap gap-2">
+          <Chip active={mosque === 'all'} onClick={() => { setMosque('all'); setSummary(null) }}>كل المساجد</Chip>
+          {activeMosques.map((m) => (
+            <Chip key={m.id} active={mosque === m.id} onClick={() => { setMosque(m.id); setSummary(null) }}>{m.name}</Chip>
+          ))}
+        </div>
+      )}
 
       {resolved && (
         <Card className="bg-brand-50">

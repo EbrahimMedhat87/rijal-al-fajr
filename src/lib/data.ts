@@ -1,8 +1,8 @@
 // طبقة الوصول للبيانات: كل استدعاءات Supabase هنا. الأخطاء ترفع Error ليتعامل معها المستدعي.
 import type { PostgrestError } from '@supabase/supabase-js'
-import { db, getMeta, replaceAttendanceCache, replaceParticipants, setMeta } from './db'
+import { db, getMeta, replaceAttendanceCache, replaceMosques, replaceParticipants, setMeta } from './db'
 import { supabase } from './supabase'
-import type { Campaign, DateRange, Participant, Profile, Role } from './types'
+import type { Campaign, DateRange, Mosque, Participant, Profile, Role } from './types'
 
 function check<T>(res: { data: T | null; error: PostgrestError | null }): T {
   if (res.error) throw res.error
@@ -38,7 +38,7 @@ export const cachedCampaign = () => getMeta<Campaign>(db, 'campaign')
 // ---------------- الأطفال والحضور (مع الكاش المحلي) ----------------
 export async function refreshParticipants(): Promise<void> {
   const rows = await fetchAll<Participant>((f, t) =>
-    supabase.from('participants').select('id, name, active').order('name').range(f, t)
+    supabase.from('participants').select('id, name, active, mosque_id').order('name').range(f, t)
   )
   await replaceParticipants(db, rows)
   await setMeta(db, 'participantsSyncedAt', Date.now())
@@ -51,12 +51,27 @@ export async function refreshAttendanceDate(date: string): Promise<void> {
   await replaceAttendanceCache(db, date, rows.map((r) => r.participant_id))
 }
 
-export async function addParticipant(name: string): Promise<void> {
-  check(await supabase.from('participants').insert({ name: name.trim() }).select('id').single())
+export async function addParticipant(name: string, mosqueId: string): Promise<void> {
+  check(await supabase.from('participants').insert({ name: name.trim(), mosque_id: mosqueId }).select('id').single())
   await refreshParticipants()
 }
 
-export async function updateParticipant(id: string, patch: { name?: string; active?: boolean }): Promise<void> {
+/** إضافة قائمة أسماء دفعة واحدة لمسجد (دفعات من 100). لو فشلت دفعة يبقى ما سبق، وإعادة المحاولة آمنة لأن الأسماء الموجودة تظهر كمكررة. */
+export async function addParticipantsBulk(names: string[], mosqueId: string): Promise<number> {
+  let added = 0
+  try {
+    for (let i = 0; i < names.length; i += 100) {
+      const rows = names.slice(i, i + 100).map((name) => ({ name: name.trim(), mosque_id: mosqueId }))
+      check(await supabase.from('participants').insert(rows).select('id'))
+      added += rows.length
+    }
+  } finally {
+    if (added > 0) await refreshParticipants().catch(() => undefined)
+  }
+  return added
+}
+
+export async function updateParticipant(id: string, patch: { name?: string; active?: boolean; mosque_id?: string }): Promise<void> {
   const res = await supabase.from('participants').update(patch).eq('id', id).select('id')
   const rows = check(res) as { id: string }[]
   if (!rows || rows.length === 0) throw new Error('permission denied')
@@ -68,12 +83,56 @@ export interface CountRowDb {
   participant_id: string
   name: string
   active: boolean
+  mosque_id: string
+  mosque_name: string
   days: number
 }
 
-export async function fetchCounts(range: DateRange): Promise<CountRowDb[]> {
-  const res = await supabase.rpc('attendance_counts', { p_from: range.from, p_to: range.to })
+export async function fetchCounts(range: DateRange, mosqueId: string | null = null): Promise<CountRowDb[]> {
+  const res = await supabase.rpc('attendance_counts', { p_from: range.from, p_to: range.to, p_mosque_id: mosqueId })
   return (check(res) ?? []).map((r: CountRowDb) => ({ ...r, days: Number(r.days) }))
+}
+
+export interface MosqueRankingDb {
+  mosque_id: string
+  name: string
+  children: number
+  present: number
+  total_days: number
+  avg_days: number
+}
+
+export async function fetchMosqueRanking(range: DateRange): Promise<MosqueRankingDb[]> {
+  const res = await supabase.rpc('mosque_ranking', { p_from: range.from, p_to: range.to })
+  return (check(res) ?? []).map((r: MosqueRankingDb) => ({
+    ...r,
+    children: Number(r.children),
+    present: Number(r.present),
+    total_days: Number(r.total_days),
+    avg_days: Number(r.avg_days)
+  }))
+}
+
+// ---------------- المساجد ----------------
+/** يحدّث قائمة المساجد وروابط المستخدم الحالي (للتخزين المحلي) */
+export async function refreshMosques(userId: string): Promise<void> {
+  const mosques = check(await supabase.from('mosques').select('id, name, active').order('name')) as Mosque[]
+  const links = check(await supabase.from('user_mosques').select('mosque_id').eq('user_id', userId)) as { mosque_id: string }[]
+  await replaceMosques(db, mosques)
+  await setMeta(db, 'myMosqueIds', links.map((l) => l.mosque_id))
+}
+
+export async function createMosque(name: string): Promise<void> {
+  check(await supabase.from('mosques').insert({ name: name.trim() }).select('id').single())
+}
+
+export async function updateMosque(id: string, patch: { name?: string; active?: boolean }): Promise<void> {
+  const rows = check(await supabase.from('mosques').update(patch).eq('id', id).select('id')) as { id: string }[]
+  if (!rows || rows.length === 0) throw new Error('permission denied')
+}
+
+export async function setUserMosques(userId: string, mosqueIds: string[]): Promise<void> {
+  check(await supabase.rpc('owner_set_user_mosques', { p_user_id: userId, p_mosque_ids: mosqueIds }))
 }
 
 export interface AttendanceRowDb {
@@ -138,14 +197,31 @@ export interface UserRow {
   display_name: string
   role: Role
   active: boolean
+  mosque_ids: string[]
 }
 
 export async function listUsers(): Promise<UserRow[]> {
   return (check(await supabase.rpc('owner_list_users')) ?? []) as UserRow[]
 }
 
-export async function upsertUser(email: string, displayName: string, role: Role, active: boolean): Promise<void> {
-  check(await supabase.rpc('owner_upsert_user', { p_email: email, p_display_name: displayName, p_role: role, p_active: active }))
+export interface PendingUser {
+  user_id: string
+  email: string
+  full_name: string | null
+  requested_mosque: string | null
+  created_at: string
+}
+
+export async function listPendingUsers(): Promise<PendingUser[]> {
+  return (check(await supabase.rpc('owner_list_pending_users')) ?? []) as PendingUser[]
+}
+
+export async function rejectSignup(userId: string): Promise<void> {
+  check(await supabase.rpc('owner_reject_signup', { p_user_id: userId }))
+}
+
+export async function upsertUser(email: string, displayName: string, role: Role, active: boolean): Promise<string> {
+  return check(await supabase.rpc('owner_upsert_user', { p_email: email, p_display_name: displayName, p_role: role, p_active: active })) as string
 }
 
 export async function updateCampaign(name: string, startDate: string, timezone: string): Promise<void> {

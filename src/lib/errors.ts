@@ -6,12 +6,14 @@ const MESSAGES: Record<string, string> = {
   ERR_BEFORE_CAMPAIGN_START: 'التاريخ قبل بداية المبادرة',
   ERR_DATE_NOT_ALLOWED: 'المسجِّل يستطيع التسجيل لليوم أو أمس فقط',
   ERR_PARTICIPANT_NOT_FOUND: 'الطفل غير موجود',
+  ERR_MOSQUE_NOT_ALLOWED: 'هذا الطفل ليس في مسجد مربوط بحسابك',
+  ERR_MOSQUE_NOT_FOUND: 'المسجد غير موجود',
   ERR_NO_ACTIVE_CAMPAIGN: 'لا توجد مبادرة نشطة — يجب إعدادها من المالك',
   ERR_REASON_REQUIRED: 'سبب الإبطال مطلوب',
   ERR_ATTENDANCE_ALREADY_VOID: 'هذا السجل مُبطَل بالفعل',
   ERR_ATTENDANCE_NOT_FOUND: 'سجل الحضور غير موجود',
   ERR_LAST_OWNER: 'لا يمكن إيقاف أو خفض آخر مالك',
-  ERR_AUTH_USER_NOT_FOUND: 'لا يوجد حساب بهذا البريد — أنشئه أولًا من لوحة Supabase (Authentication → Users)',
+  ERR_AUTH_USER_NOT_FOUND: 'لا يوجد حساب بهذا البريد — لازم المنظم ينشئ حسابه الأول من شاشة الدخول (منظم جديد؟ أنشئ حسابك)',
   ERR_INVALID_ROLE: 'دور غير صالح',
   ERR_INVALID_INPUT: 'بيانات غير صالحة',
   ERR_START_DATE_AFTER_ATTENDANCE: 'لا يمكن تأخير تاريخ البداية بعد سجلات حضور موجودة',
@@ -30,6 +32,7 @@ export function errorToArabic(e: unknown): string {
   if (m) return arabicError(m[0])
   if (/not recognized/i.test(msg)) return 'اسم المنطقة الزمنية غير صحيح (مثال: Africa/Cairo)'
   if (/failed to fetch|network|load failed/i.test(msg)) return MESSAGES.NETWORK
+  if (/duplicate key/i.test(msg)) return 'الاسم مستخدم من قبل'
   if (/row-level security|permission denied/i.test(msg)) return MESSAGES.ERR_NOT_AUTHORIZED
   return 'حدث خطأ غير متوقع، حاول مرة أخرى'
 }

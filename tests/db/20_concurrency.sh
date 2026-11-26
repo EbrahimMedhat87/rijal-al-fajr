@@ -7,7 +7,7 @@ P="psql -X -q -t -A -v ON_ERROR_STOP=0 -d $DB"
 # طفل جديد + تاريخ جديد لكل جولة (نستخدم أيام تاريخية داخل نطاق المبادرة، بصلاحية admin)
 $P -c "select t.logout();" >/dev/null
 $P -c "
-  insert into public.participants (name) values ('اختبار التزامن');
+  insert into public.participants (name, mosque_id) values ('اختبار التزامن', (select id from public.mosques limit 1));
 " >/dev/null
 
 PID=$($P -c "select id from public.participants where name='اختبار التزامن'")

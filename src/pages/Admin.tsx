@@ -3,10 +3,11 @@ import { Navigate } from 'react-router-dom'
 import { Badge, Banner, Button, Card, Field, Modal, PageTitle, Spinner, inputClass } from '../components/ui'
 import { useAppData } from '../lib/app-data'
 import { canManage, useSession } from '../lib/auth'
-import { fetchAudit, fetchProfileNames, listUsers, updateCampaign, upsertUser, type AuditRow, type UserRow } from '../lib/data'
+import { createMosque, fetchAudit, fetchProfileNames, listPendingUsers, listUsers, refreshMosques, rejectSignup, setUserMosques, updateCampaign, updateMosque, upsertUser, type AuditRow, type PendingUser, type UserRow } from '../lib/data'
 import { formatDateTimeInTz } from '../lib/dates'
 import { errorToArabic } from '../lib/errors'
 import { useOnline } from '../lib/hooks'
+import { normalizeArabic } from '../lib/text'
 import { useToast } from '../lib/toast'
 import type { Role } from '../lib/types'
 
@@ -19,21 +20,27 @@ const ACTION_AR: Record<string, string> = {
   'profiles.update': 'تعديل منظم',
   'profiles.delete': 'حذف منظم',
   'campaigns.insert': 'إنشاء المبادرة',
-  'campaigns.update': 'تعديل إعدادات المبادرة'
+  'campaigns.update': 'تعديل إعدادات المبادرة',
+  'mosques.insert': 'إضافة مسجد',
+  'mosques.update': 'تعديل مسجد',
+  'user_mosques.insert': 'ربط منظم بمسجد',
+  'user_mosques.delete': 'فك ربط منظم بمسجد'
 }
 
 export default function Admin() {
   const session = useSession()
-  const { campaign } = useAppData()
+  const { campaign, allMosques } = useAppData()
   const online = useOnline()
   const toast = useToast()
   const isOwner = session.profile.role === 'owner'
 
   const [users, setUsers] = useState<UserRow[] | null>(null)
+  const [pending, setPending] = useState<PendingUser[] | null>(null)
   const [audit, setAudit] = useState<AuditRow[] | null>(null)
   const [names, setNames] = useState<Record<string, string>>({})
   const [error, setError] = useState<string | null>(null)
   const [editUser, setEditUser] = useState<Partial<UserRow> & { isNew?: boolean } | null>(null)
+  const [editMosque, setEditMosque] = useState<{ id?: string; name: string; active: boolean } | null>(null)
   const [formError, setFormError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
@@ -55,7 +62,11 @@ export default function Admin() {
       const [a, n] = await Promise.all([fetchAudit(100), fetchProfileNames()])
       setAudit(a)
       setNames(n)
-      if (isOwner) setUsers(await listUsers())
+      if (isOwner) {
+        const [u, p] = await Promise.all([listUsers(), listPendingUsers()])
+        setUsers(u)
+        setPending(p)
+      }
       setError(null)
     } catch (e) {
       setError(errorToArabic(e))
@@ -74,9 +85,47 @@ export default function Admin() {
     setBusy(true)
     setFormError(null)
     try {
-      await upsertUser(editUser.email ?? '', editUser.display_name ?? '', (editUser.role ?? 'recorder') as Role, editUser.active ?? true)
+      const id = await upsertUser(editUser.email ?? '', editUser.display_name ?? '', (editUser.role ?? 'recorder') as Role, editUser.active ?? true)
+      await setUserMosques(id, editUser.mosque_ids ?? [])
       toast('success', 'تم حفظ المنظم')
       setEditUser(null)
+      await load()
+    } catch (err) {
+      setFormError(errorToArabic(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const approve = (p: PendingUser) => {
+    const req = normalizeArabic(p.requested_mosque ?? '')
+    const guess = req ? allMosques.filter((m) => req.includes(normalizeArabic(m.name)) || normalizeArabic(m.name).includes(req)).map((m) => m.id) : []
+    setEditUser({ isNew: true, email: p.email, display_name: p.full_name ?? '', role: 'admin', active: true, mosque_ids: guess })
+    setFormError(null)
+  }
+
+  const reject = async (p: PendingUser) => {
+    if (!window.confirm(`رفض وحذف طلب ${p.full_name ?? p.email}؟`)) return
+    try {
+      await rejectSignup(p.user_id)
+      toast('success', 'تم حذف الطلب')
+      await load()
+    } catch (err) {
+      setError(errorToArabic(err))
+    }
+  }
+
+  const saveMosque = async (e: FormEvent) => {
+    e.preventDefault()
+    if (!editMosque) return
+    setBusy(true)
+    setFormError(null)
+    try {
+      if (editMosque.id) await updateMosque(editMosque.id, { name: editMosque.name, active: editMosque.active })
+      else await createMosque(editMosque.name)
+      await refreshMosques(session.userId)
+      toast('success', 'تم حفظ المسجد')
+      setEditMosque(null)
       await load()
     } catch (err) {
       setFormError(errorToArabic(err))
@@ -110,6 +159,26 @@ export default function Admin() {
 
       {isOwner ? (
         <>
+          {pending && pending.length > 0 && (
+            <Card className="border-gold-400">
+              <h2 className="mb-1 font-bold text-brand-900">طلبات تسجيل جديدة ({pending.length})</h2>
+              <p className="mb-3 text-xs leading-relaxed text-brand-700">دول أشخاص أنشأوا حسابات ولسه مش شايفين أي بيانات. اضغط "قبول" لتحديد دورهم ومسجدهم.</p>
+              <ul className="divide-y divide-brand-100">
+                {pending.map((p) => (
+                  <li key={p.user_id} className="py-3">
+                    <div className="font-semibold text-brand-900">{p.full_name ?? '—'}</div>
+                    <div className="truncate text-xs text-brand-700" dir="ltr">{p.email}</div>
+                    {p.requested_mosque && <div className="mt-1 text-xs text-brand-800">🕌 قال إنه في: {p.requested_mosque}</div>}
+                    <div className="mt-2 flex gap-2">
+                      <Button disabled={!online} onClick={() => approve(p)}>قبول</Button>
+                      <Button variant="secondary" disabled={!online} onClick={() => void reject(p)}>رفض</Button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </Card>
+          )}
+
           <Card>
             <h2 className="mb-3 font-bold text-brand-900">إعدادات المبادرة</h2>
             <form onSubmit={saveCampaign} className="space-y-3">
@@ -126,11 +195,33 @@ export default function Admin() {
 
           <Card>
             <div className="mb-3 flex items-center justify-between">
+              <h2 className="font-bold text-brand-900">المساجد</h2>
+              <Button variant="secondary" disabled={!online} onClick={() => { setEditMosque({ name: '', active: true }); setFormError(null) }}>+ إضافة</Button>
+            </div>
+            {allMosques.length === 0 ? (
+              <p className="text-sm text-brand-700">لا توجد مساجد. أضف المساجد أولًا، ثم اربط كل منظم بمسجده، ثم أضف الأطفال لكل مسجد.</p>
+            ) : (
+              <ul className="divide-y divide-brand-100">
+                {allMosques.map((m) => (
+                  <li key={m.id} className="flex items-center justify-between gap-3 py-3">
+                    <div className="min-w-0">
+                      <div className="truncate font-semibold text-brand-900">🕌 {m.name}</div>
+                      {!m.active && <Badge tone="red">موقوف</Badge>}
+                    </div>
+                    <Button variant="secondary" disabled={!online} onClick={() => { setEditMosque({ id: m.id, name: m.name, active: m.active }); setFormError(null) }}>تعديل</Button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Card>
+
+          <Card>
+            <div className="mb-3 flex items-center justify-between">
               <h2 className="font-bold text-brand-900">المنظمون</h2>
-              <Button variant="secondary" disabled={!online} onClick={() => { setEditUser({ isNew: true, role: 'recorder', active: true }); setFormError(null) }}>+ إضافة</Button>
+              <Button variant="secondary" disabled={!online} onClick={() => { setEditUser({ isNew: true, role: 'recorder', active: true, mosque_ids: [] }); setFormError(null) }}>+ إضافة</Button>
             </div>
             <p className="mb-3 text-xs leading-relaxed text-brand-700">
-              لا يوجد تسجيل عام. أنشئ الحساب أولًا من لوحة Supabase (Authentication ← Users ← Add user)، ثم اربطه هنا بنفس البريد وحدد دوره.
+              المنظم الجديد ينشئ حسابه بنفسه من شاشة الدخول ("منظم جديد؟ أنشئ حسابك")، فيظهر لك في "طلبات تسجيل جديدة" أعلاه لتقبله وتربطه بمسجده.
             </p>
             {!users ? <Spinner /> : (
               <ul className="divide-y divide-brand-100">
@@ -139,7 +230,11 @@ export default function Admin() {
                     <div className="min-w-0">
                       <div className="truncate font-semibold text-brand-900">{u.display_name}</div>
                       <div className="truncate text-xs text-brand-700" dir="ltr">{u.email}</div>
-                      <div className="mt-1 flex gap-1.5"><Badge tone="green">{ROLE_AR[u.role]}</Badge>{!u.active && <Badge tone="red">موقوف</Badge>}</div>
+                      <div className="mt-1 flex flex-wrap gap-1.5">
+                        <Badge tone="green">{ROLE_AR[u.role]}</Badge>
+                        {!u.active && <Badge tone="red">موقوف</Badge>}
+                        {u.role === 'owner' ? <Badge tone="blue">كل المساجد</Badge> : u.mosque_ids.length === 0 ? <Badge tone="gold">بدون مسجد</Badge> : u.mosque_ids.map((id) => <Badge key={id} tone="blue">{allMosques.find((m) => m.id === id)?.name ?? '—'}</Badge>)}
+                      </div>
                     </div>
                     <Button variant="secondary" disabled={!online} onClick={() => { setEditUser({ ...u }); setFormError(null) }}>تعديل</Button>
                   </li>
@@ -169,11 +264,29 @@ export default function Admin() {
         )}
       </Card>
 
+      {editMosque && (
+        <Modal title={editMosque.id ? 'تعديل مسجد' : 'إضافة مسجد'} onClose={() => setEditMosque(null)}>
+          <form onSubmit={saveMosque} className="space-y-4">
+            {formError && <Banner tone="red">{formError}</Banner>}
+            <Field label="اسم المسجد">
+              <input className={inputClass} required maxLength={100} autoFocus value={editMosque.name} onChange={(e) => setEditMosque({ ...editMosque, name: e.target.value })} />
+            </Field>
+            {editMosque.id && (
+              <label className="flex min-h-12 items-center gap-3">
+                <input type="checkbox" className="h-5 w-5" checked={editMosque.active} onChange={(e) => setEditMosque({ ...editMosque, active: e.target.checked })} />
+                <span className="font-semibold text-brand-900">المسجد نشط</span>
+              </label>
+            )}
+            <Button type="submit" block disabled={busy || !editMosque.name.trim()}>{busy ? 'جارٍ الحفظ…' : 'حفظ'}</Button>
+          </form>
+        </Modal>
+      )}
+
       {editUser && (
         <Modal title={editUser.isNew ? 'إضافة منظم' : 'تعديل منظم'} onClose={() => setEditUser(null)}>
           <form onSubmit={saveUser} className="space-y-4">
             {formError && <Banner tone="red">{formError}</Banner>}
-            <Field label="البريد الإلكتروني" hint="يجب أن يكون الحساب منشأً في Supabase Auth.">
+            <Field label="البريد الإلكتروني" hint="لازم يكون المنظم أنشأ حسابه من شاشة الدخول.">
               <input className={inputClass} type="email" dir="ltr" required disabled={!editUser.isNew} value={editUser.email ?? ''} onChange={(e) => setEditUser({ ...editUser, email: e.target.value })} />
             </Field>
             <Field label="الاسم الظاهر"><input className={inputClass} required value={editUser.display_name ?? ''} onChange={(e) => setEditUser({ ...editUser, display_name: e.target.value })} /></Field>
@@ -184,6 +297,31 @@ export default function Admin() {
                 <option value="owner">مالك — كل شيء</option>
               </select>
             </Field>
+            {editUser.role === 'owner' ? (
+              <p className="text-xs text-brand-700">المالك يرى كل المساجد تلقائيًا.</p>
+            ) : (
+              <fieldset>
+                <legend className="mb-1.5 text-sm font-semibold text-brand-900">المساجد المربوط بها</legend>
+                {allMosques.length === 0 && <p className="text-xs text-brand-700">أضف المساجد أولًا.</p>}
+                {allMosques.map((m) => {
+                  const on = (editUser.mosque_ids ?? []).includes(m.id)
+                  return (
+                    <label key={m.id} className="flex min-h-11 items-center gap-3">
+                      <input
+                        type="checkbox"
+                        className="h-5 w-5"
+                        checked={on}
+                        onChange={(e) => setEditUser({ ...editUser, mosque_ids: e.target.checked ? [...(editUser.mosque_ids ?? []), m.id] : (editUser.mosque_ids ?? []).filter((x) => x !== m.id) })}
+                      />
+                      <span className="text-brand-900">{m.name}</span>
+                    </label>
+                  )
+                })}
+                {allMosques.length > 0 && (editUser.mosque_ids ?? []).length === 0 && (
+                  <p className="mt-1 text-xs text-red-800">بدون مسجد لن يرى هذا المنظم أي أطفال.</p>
+                )}
+              </fieldset>
+            )}
             <label className="flex min-h-12 items-center gap-3">
               <input type="checkbox" className="h-5 w-5" checked={editUser.active ?? true} onChange={(e) => setEditUser({ ...editUser, active: e.target.checked })} />
               <span className="font-semibold text-brand-900">الحساب مُفعَّل</span>

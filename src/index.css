@@ -37,3 +37,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 }
 .safe-bottom { padding-bottom: max(0.5rem, env(safe-area-inset-bottom)); }
 .safe-top { padding-top: env(safe-area-inset-top); }
+
+/* حقول التاريخ على iOS تتجاهل العرض وتسبب تمرير أفقي */
+input[type="date"], input[type="month"] {
+  -webkit-appearance: none;
+  appearance: none;
+  min-width: 0;
+  max-width: 100%;
+  width: 100%;
+}

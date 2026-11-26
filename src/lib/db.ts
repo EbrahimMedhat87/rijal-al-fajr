@@ -1,11 +1,12 @@
 import Dexie, { type Table } from 'dexie'
-import type { CachedAttendance, MetaRow, Participant, QueuedOp } from './types'
+import type { CachedAttendance, MetaRow, Mosque, Participant, QueuedOp } from './types'
 
 export class AppDb extends Dexie {
   participants!: Table<Participant, string>
   queue!: Table<QueuedOp, string>
   attendanceCache!: Table<CachedAttendance, string>
   meta!: Table<MetaRow, string>
+  mosques!: Table<Mosque, string>
 
   constructor(name = 'rijal-al-fajr') {
     super(name)
@@ -14,6 +15,14 @@ export class AppDb extends Dexie {
       queue: 'opId, status, userId, updatedAt, date, [participantId+date]',
       attendanceCache: 'key, date',
       meta: 'key'
+    })
+    // v2: المساجد
+    this.version(2).stores({
+      participants: 'id, name, active, mosque_id',
+      queue: 'opId, status, userId, updatedAt, date, [participantId+date]',
+      attendanceCache: 'key, date',
+      meta: 'key',
+      mosques: 'id'
     })
   }
 }
@@ -44,5 +53,12 @@ export async function replaceParticipants(d: AppDb, rows: Participant[]): Promis
   await d.transaction('rw', d.participants, async () => {
     await d.participants.clear()
     await d.participants.bulkPut(rows)
+  })
+}
+
+export async function replaceMosques(d: AppDb, rows: Mosque[]): Promise<void> {
+  await d.transaction('rw', d.mosques, async () => {
+    await d.mosques.clear()
+    await d.mosques.bulkPut(rows)
   })
 }

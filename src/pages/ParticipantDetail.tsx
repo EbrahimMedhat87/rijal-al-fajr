@@ -16,7 +16,7 @@ import { useToast } from '../lib/toast'
 export default function ParticipantDetail() {
   const { id = '' } = useParams()
   const session = useSession()
-  const { today, campaign } = useAppData()
+  const { today, campaign, mosques, mosqueName } = useAppData()
   const online = useOnline()
   const toast = useToast()
   const manage = canManage(session.profile.role)
@@ -33,6 +33,7 @@ export default function ParticipantDetail() {
   const [reason, setReason] = useState('')
   const [editing, setEditing] = useState(false)
   const [newName, setNewName] = useState('')
+  const [newMosque, setNewMosque] = useState('')
   const [busy, setBusy] = useState(false)
   const [formError, setFormError] = useState<string | null>(null)
 
@@ -96,8 +97,8 @@ export default function ParticipantDetail() {
     setBusy(true)
     setFormError(null)
     try {
-      await updateParticipant(id, { name: newName })
-      toast('success', 'تم حفظ الاسم')
+      await updateParticipant(id, { name: newName, ...(newMosque && participant && newMosque !== participant.mosque_id ? { mosque_id: newMosque } : {}) })
+      toast('success', 'تم الحفظ')
       setEditing(false)
     } catch (err) {
       setFormError(errorToArabic(err))
@@ -125,14 +126,17 @@ export default function ParticipantDetail() {
       <div className="flex items-start justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold text-brand-900">{participant.name}</h1>
-          <div className="mt-1">{participant.active ? <Badge tone="green">نشط</Badge> : <Badge tone="gray">موقوف</Badge>}</div>
+          <div className="mt-1 flex flex-wrap gap-1.5">
+            {participant.active ? <Badge tone="green">نشط</Badge> : <Badge tone="gray">موقوف</Badge>}
+            {participant.mosque_id && <Badge tone="blue">🕌 {mosqueName(participant.mosque_id)}</Badge>}
+          </div>
         </div>
       </div>
 
       {manage && (
         <div className="flex gap-2">
-          <Button variant="secondary" className="flex-1" disabled={!online} onClick={() => { setNewName(participant.name); setEditing(true); setFormError(null) }}>
-            تعديل الاسم
+          <Button variant="secondary" className="flex-1" disabled={!online} onClick={() => { setNewName(participant.name); setNewMosque(participant.mosque_id); setEditing(true); setFormError(null) }}>
+            تعديل البيانات
           </Button>
           <Button variant="secondary" className="flex-1" disabled={!online} onClick={() => void toggleActive()}>
             {participant.active ? 'إيقاف' : 'إعادة تفعيل'}
@@ -214,12 +218,21 @@ export default function ParticipantDetail() {
       )}
 
       {editing && (
-        <Modal title="تعديل الاسم" onClose={() => setEditing(false)}>
+        <Modal title="تعديل بيانات الطفل" onClose={() => setEditing(false)}>
           <form onSubmit={doRename} className="space-y-4">
             {formError && <Banner tone="red">{formError}</Banner>}
             <Field label="الاسم">
               <input className={inputClass} value={newName} maxLength={100} required autoFocus onChange={(e) => setNewName(e.target.value)} />
             </Field>
+            {mosques.filter((m) => m.active || m.id === participant.mosque_id).length > 1 && (
+              <Field label="المسجد" hint="نقل الطفل لمسجد آخر ينقل معه تاريخ حضوره.">
+                <select className={inputClass} value={newMosque} onChange={(e) => setNewMosque(e.target.value)}>
+                  {mosques.filter((m) => m.active || m.id === participant.mosque_id).map((m) => (
+                    <option key={m.id} value={m.id}>{m.name}</option>
+                  ))}
+                </select>
+              </Field>
+            )}
             <Button type="submit" block disabled={busy || !newName.trim()}>{busy ? 'جارٍ الحفظ…' : 'حفظ'}</Button>
           </form>
         </Modal>

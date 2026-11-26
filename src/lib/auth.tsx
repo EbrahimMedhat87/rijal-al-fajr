@@ -12,6 +12,8 @@ export type AuthState =
 interface AuthCtx {
   state: AuthState
   signIn(email: string, password: string): Promise<string | null>
+  /** يرجع { error } أو { info } (رسالة نجاح للعرض) */
+  signUp(input: { fullName: string; requestedMosque: string; email: string; password: string }): Promise<{ error?: string; info?: string }>
   signOut(): Promise<void>
 }
 
@@ -36,7 +38,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           const profile = await fetchProfile(session.user.id)
           if (!profile || !profile.active) {
             await supabase.auth.signOut({ scope: 'local' })
-            return { status: 'signedOut', notice: 'حسابك غير مُفعَّل. تواصل مع مالك المبادرة.' }
+            return {
+              status: 'signedOut',
+              notice: !profile
+                ? 'حسابك في انتظار موافقة مالك المبادرة. بعد الموافقة ادخل بنفس البريد وكلمة المرور.'
+                : 'حسابك موقوف. تواصل مع مالك المبادرة.'
+            }
           }
           await setMeta(db, 'profile', profile)
           return { status: 'ready', userId: session.user.id, profile, offlineMode: false }
@@ -107,6 +114,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [resolve]
   )
 
+  const signUp = useCallback<AuthCtx['signUp']>(async ({ fullName, requestedMosque, email, password }) => {
+    const { data, error } = await supabase.auth.signUp({
+      email: email.trim(),
+      password,
+      options: { data: { full_name: fullName.trim(), requested_mosque: requestedMosque.trim() } }
+    })
+    if (error) {
+      if (/already registered|already been registered/i.test(error.message)) return { error: 'هذا البريد مسجّل بالفعل — جرّب تسجيل الدخول.' }
+      if (/password/i.test(error.message)) return { error: 'كلمة المرور ضعيفة — استخدم 8 أحرف أو أكثر (حروف وأرقام).' }
+      if (/rate|too many|seconds/i.test(error.message)) return { error: 'محاولات كثيرة — انتظر دقيقة وحاول مرة أخرى.' }
+      if (isNetworkish(error)) return { error: 'إنشاء الحساب يحتاج اتصالًا بالإنترنت' }
+      return { error: 'تعذّر إنشاء الحساب، حاول مرة أخرى' }
+    }
+    if (data.session) {
+      // التأكيد بالبريد مُعطَّل: الجلسة اتفتحت فورًا، لكن الحساب بلا صلاحيات لحد موافقة المالك → نخرج
+      await supabase.auth.signOut({ scope: 'local' })
+      return { info: 'تم إنشاء حسابك ✅ — في انتظار موافقة مالك المبادرة. بعد ما يوافق ادخل بنفس البريد وكلمة المرور.' }
+    }
+    return { info: 'تم إنشاء حسابك ✅ — افتح رسالة التأكيد على بريدك، وبعدها انتظر موافقة مالك المبادرة.' }
+  }, [])
+
   const signOut = useCallback(async () => {
     try {
       await supabase.auth.signOut({ scope: 'local' })
@@ -114,11 +142,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       /* نكمل التنظيف المحلي */
     }
     // خصوصية الأطفال على الأجهزة المشتركة: نمسح الكاش المقروء. نُبقي طابور المزامنة (معرّفات فقط) كي لا نفقد سجلات.
-    await Promise.all([db.participants.clear(), db.attendanceCache.clear(), db.meta.clear()])
+    await Promise.all([db.participants.clear(), db.attendanceCache.clear(), db.mosques.clear(), db.meta.clear()])
     setState({ status: 'signedOut' })
   }, [])
 
-  return <Ctx.Provider value={{ state, signIn, signOut }}>{children}</Ctx.Provider>
+  return <Ctx.Provider value={{ state, signIn, signUp, signOut }}>{children}</Ctx.Provider>
 }
 
 export function useAuth(): AuthCtx {

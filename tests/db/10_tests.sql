@@ -5,7 +5,7 @@ set client_min_messages = notice;
 -- تجهيز: مستخدمو Auth (كأنهم أُنشئوا من لوحة Supabase)
 -- ===========================================================================
 insert into auth.users (email) values
-  ('owner@x.test'), ('admin@x.test'), ('rec1@x.test'), ('rec2@x.test'), ('stranger@x.test');
+  ('owner@x.test'), ('admin@x.test'), ('rec1@x.test'), ('rec2@x.test'), ('stranger@x.test'), ('admin2@x.test'), ('nomosque@x.test');
 
 -- ---------------------------------------------------------------------------
 -- 1) Bootstrap: أول Owner فقط، مرة واحدة، ومن خارج التطبيق
@@ -42,6 +42,15 @@ select t.expect_err($$select public.owner_upsert_user('nobody@x.test','س','reco
 select t.expect_err($$select public.owner_upsert_user('rec1@x.test','س','superuser')$$,
   'ERR_INVALID_ROLE', 'دور غير صالح مرفوض');
 select t.expect((select count(*) from public.owner_list_users()) = 4, 'owner_list_users يرجع 4 منظمين');
+-- المساجد: المالك ينشئها ويربط المنظمين
+insert into public.mosques (name) values ('المسجد الكبير'), ('مسجد الرحمة');
+create temp table mq as select
+  (select id from public.mosques where name = 'المسجد الكبير') as ma,
+  (select id from public.mosques where name = 'مسجد الرحمة')  as mb;
+grant select on mq to authenticated;
+select public.owner_set_user_mosques(t.uid('admin@x.test'), array[(select ma from mq)]);
+select public.owner_set_user_mosques(t.uid('rec1@x.test'),  array[(select ma from mq)]);
+select public.owner_set_user_mosques(t.uid('rec2@x.test'),  array[(select ma from mq)]);
 select t.logout();
 
 select t.login(t.uid('admin@x.test'));
@@ -66,10 +75,10 @@ select t.logout();
 -- 3) الأطفال: Admin/Owner يديرون، Recorder يقرأ فقط، الغريب لا يرى شيئًا
 -- ---------------------------------------------------------------------------
 select t.login(t.uid('admin@x.test'));
-insert into public.participants (name) values ('أحمد'), ('محمد'), ('يوسف'), ('عمر'), ('خالد');
+insert into public.participants (name, mosque_id) select n, (select ma from mq) from unnest(array['أحمد','محمد','يوسف','عمر','خالد']) n;
 select t.expect((select count(*) from public.participants) = 5, 'Admin أضاف 5 أطفال');
 select t.expect((select created_by from public.participants where name='أحمد') = auth.uid(), 'created_by يُملأ تلقائيًا');
-select t.expect_err($$insert into public.participants (name) values ('   ')$$,
+select t.expect_err($$insert into public.participants (name, mosque_id) values ('   ', (select ma from mq))$$,
   'violates check constraint', 'اسم فارغ مرفوض');
 select t.expect_err($$update public.participants set created_by = null where name='أحمد'$$,
   'permission denied', 'لا يمكن تعديل created_by');
@@ -79,7 +88,7 @@ select t.logout();
 
 select t.login(t.uid('rec1@x.test'));
 select t.expect((select count(*) from public.participants) = 5, 'Recorder يرى قائمة الأطفال');
-select t.expect_err($$insert into public.participants (name) values ('ممنوع')$$,
+select t.expect_err($$insert into public.participants (name, mosque_id) values ('ممنوع', (select ma from mq))$$,
   'row-level security', 'Recorder لا يضيف أطفالًا');
 do $$ declare n int; begin
   update public.participants set name = 'x';
@@ -94,7 +103,7 @@ select t.expect((select count(*) from public.attendance) = 0, 'الغريب لا
 select t.expect((select count(*) from public.campaigns) = 0, 'الغريب لا يرى الإعدادات');
 select t.expect_err($$select public.record_attendance(gen_random_uuid(), (select id from public.participants limit 1), current_date)$$,
   'ERR_NOT_AUTHORIZED', 'الغريب لا يسجّل حضورًا');
-select t.expect_err($$insert into public.participants (name) values ('ممنوع')$$,
+select t.expect_err($$insert into public.participants (name, mosque_id) values ('ممنوع', (select ma from mq))$$,
   'row-level security', 'الغريب لا يضيف أطفالًا');
 select t.logout();
 
@@ -321,6 +330,143 @@ select t.logout();
 select t.login(t.uid('stranger@x.test'));
 select t.expect_err($$select * from public.attendance_counts('2025-01-01','2099-12-31')$$,
   'ERR_NOT_AUTHORIZED', 'الغريب لا يصل إلى العدّادات');
+select t.logout();
+
+
+-- ---------------------------------------------------------------------------
+-- 12) المساجد: العزل بين المساجد
+-- ---------------------------------------------------------------------------
+select t.login(t.uid('owner@x.test'));
+insert into public.participants (name, mosque_id) values ('بلال', (select mb from mq));
+select public.owner_upsert_user('admin2@x.test',   'مشرف الرحمة', 'admin');
+select public.owner_upsert_user('nomosque@x.test', 'بلا مسجد',    'admin');
+select public.owner_set_user_mosques(t.uid('admin2@x.test'), array[(select mb from mq)]);
+select t.expect((select count(*) from public.participants) = 6, 'المالك يرى أطفال كل المساجد');
+select t.expect((select count(*) from public.user_mosques) = 4, 'المالك يرى كل روابط المنظمين بالمساجد');
+select t.expect_err($$select public.owner_set_user_mosques(t.uid('admin2@x.test'), array[gen_random_uuid()])$$,
+  'ERR_MOSQUE_NOT_FOUND', 'ربط بمسجد غير موجود مرفوض');
+select t.expect_err($$insert into public.mosques (name) values ('  المسجد الكبير ')$$,
+  'duplicate key', 'اسم مسجد مكرر مرفوض');
+select t.expect((select public.record_attendance(gen_random_uuid(), (select id from public.participants where name = 'بلال'), (select today from ctx))->>'status') = 'created',
+  'المالك يسجّل حضورًا في أي مسجد');
+select t.expect((select array_length(mosque_ids, 1) from public.owner_list_users() where display_name = 'مشرف الرحمة') = 1,
+  'owner_list_users يعرض مساجد كل منظم');
+select t.logout();
+
+create temp table bilal  as select id from public.participants where name = 'بلال';
+create temp table anyatt as
+  select a.id from public.attendance a join public.participants p on p.id = a.participant_id
+   where p.mosque_id = (select ma from mq) and a.status = 'valid' limit 1;
+grant select on bilal, anyatt to authenticated;
+
+-- مشرف مسجد الرحمة فقط
+select t.login(t.uid('admin2@x.test'));
+select t.expect((select count(*) from public.participants) = 1, 'مشرف مسجد الرحمة يرى أطفال مسجده فقط');
+select t.expect((select count(*) from public.attendance) = 1, 'لا يرى حضور أطفال المساجد الأخرى');
+select t.expect_err($$select public.record_attendance(gen_random_uuid(), (select ahmed from ctx), (select today from ctx))$$,
+  'ERR_MOSQUE_NOT_ALLOWED', 'لا يسجّل حضورًا لطفل من مسجد آخر');
+select t.expect_err($$insert into public.participants (name, mosque_id) values ('تسلل', (select ma from mq))$$,
+  'row-level security', 'لا يضيف طفلًا لمسجد آخر');
+insert into public.participants (name, mosque_id) values ('عمار', (select mb from mq));
+select t.expect((select count(*) from public.participants) = 2, 'يضيف أطفالًا لمسجده');
+select t.expect_err($$update public.participants set mosque_id = (select ma from mq) where name = 'عمار'$$,
+  'row-level security', 'لا ينقل طفلًا إلى مسجد آخر');
+select t.expect_err($$select public.void_attendance((select id from anyatt), 'سبب')$$,
+  'ERR_MOSQUE_NOT_ALLOWED', 'لا يُبطل حضور مسجد آخر');
+select t.expect_err($$select public.owner_set_user_mosques(t.uid('admin2@x.test'), array[(select ma from mq)])$$,
+  'ERR_NOT_AUTHORIZED', 'المشرف لا يغيّر ربط المساجد');
+-- قرار المالك: المشرف يرى الترتيب العام للأطفال والمساجد
+select t.expect((select count(*) from public.attendance_counts('2025-01-01', '2099-12-31')) = 7,
+  'المشرف يرى ترتيب الأطفال في كل المساجد');
+select t.expect((select count(*) from public.attendance_counts('2025-01-01', '2099-12-31', (select mb from mq))) = 2,
+  'فلتر المسجد في الترتيب يعمل');
+select t.expect((select count(*) from public.mosque_ranking('2025-01-01', '2099-12-31')) = 2, 'ترتيب المساجد يرجع المسجدين');
+select t.expect((select total_days from public.mosque_ranking('2025-01-01', '2099-12-31') where name = 'مسجد الرحمة') = 1,
+  'إجمالي أيام مسجد الرحمة = 1');
+select t.expect((select children from public.mosque_ranking('2025-01-01', '2099-12-31') where name = 'مسجد الرحمة') = 2,
+  'عدد أطفال مسجد الرحمة = 2');
+select t.expect((select avg_days from public.mosque_ranking('2025-01-01', '2099-12-31') where name = 'مسجد الرحمة') = 0.50,
+  'متوسط مسجد الرحمة = 0.50 (يوم واحد ÷ طفلين)');
+select t.expect((select total_days from public.mosque_ranking('2025-01-01', '2099-12-31') where name = 'المسجد الكبير') > 1,
+  'مسجد الكبير له أيام حضور أكثر');
+select t.logout();
+
+-- مشرف بلا أي مسجد
+select t.login(t.uid('nomosque@x.test'));
+select t.expect((select count(*) from public.participants) = 0, 'مشرف بلا مسجد لا يرى أحدًا');
+select t.expect((select count(*) from public.attendance) = 0, 'مشرف بلا مسجد لا يرى حضورًا');
+select t.expect_err($$select public.record_attendance(gen_random_uuid(), (select ahmed from ctx), (select today from ctx))$$,
+  'ERR_MOSQUE_NOT_ALLOWED', 'مشرف بلا مسجد لا يسجّل');
+select t.expect_err($$insert into public.participants (name, mosque_id) values ('x', (select ma from mq))$$,
+  'row-level security', 'مشرف بلا مسجد لا يضيف أطفالًا');
+select t.logout();
+
+-- مسجِّل في المسجد الكبير
+select t.login(t.uid('rec1@x.test'));
+select t.expect((select count(*) from public.participants) = 5, 'المسجِّل يرى أطفال مسجده فقط');
+select t.expect_err($$select public.record_attendance(gen_random_uuid(), (select id from bilal), (select today from ctx))$$,
+  'ERR_MOSQUE_NOT_ALLOWED', 'المسجِّل لا يسجّل لطفل من مسجد آخر');
+select t.expect_err($$select * from public.mosque_ranking('2025-01-01', '2099-12-31')$$,
+  'ERR_NOT_AUTHORIZED', 'المسجِّل لا يرى ترتيب المساجد');
+select t.expect((select count(*) from public.user_mosques) = 1, 'المسجِّل يرى ربطه هو فقط');
+select t.expect((select count(*) from public.mosques) = 2, 'المسجِّل يقرأ أسماء المساجد');
+select t.logout();
+
+-- مشرف المسجد الكبير يرى الترتيب العام أيضًا لكن لا يكتب في مسجد الرحمة
+select t.login(t.uid('admin@x.test'));
+select t.expect((select count(*) from public.participants) = 5, 'مشرف المسجد الكبير يرى أطفال مسجده فقط');
+select t.expect((select count(*) from public.attendance_counts('2025-01-01', '2099-12-31')) = 7, 'يرى ترتيب الأطفال العام');
+select t.expect_err($$select public.record_attendance(gen_random_uuid(), (select id from bilal), (select today from ctx))$$,
+  'ERR_MOSQUE_NOT_ALLOWED', 'لا يسجّل لمسجد الرحمة');
+select t.expect_err($$update public.participants set mosque_id = (select mb from mq) where name = 'أحمد'$$,
+  'row-level security', 'لا ينقل طفلًا إلى مسجد غير مربوط به');
+select t.logout();
+
+-- مسجد موقوف
+select t.login(t.uid('owner@x.test'));
+update public.mosques set active = false where id = (select mb from mq);
+select t.expect((select count(*) from public.mosque_ranking('2025-01-01', '2099-12-31')) = 1, 'المسجد الموقوف يخرج من ترتيب المساجد');
+select t.logout();
+select t.login(t.uid('admin2@x.test'));
+select t.expect_err($$insert into public.participants (name, mosque_id) values ('جديد', (select mb from mq))$$,
+  'row-level security', 'لا إضافة أطفال لمسجد موقوف');
+select t.expect((select count(*) from public.participants) = 2, 'أطفال المسجد الموقوف يبقون ظاهرين');
+select t.logout();
+select t.expect_err($$delete from public.mosques where id = (select mb from mq)$$,
+  'violates foreign key', 'لا يُحذف مسجد فيه أطفال');
+select t.login(t.uid('owner@x.test'));
+update public.mosques set active = true where id = (select mb from mq);
+select t.logout();
+
+-- ---------------------------------------------------------------------------
+-- 13) طلبات التسجيل الذاتي
+-- ---------------------------------------------------------------------------
+insert into auth.users (email, raw_user_meta_data)
+  values ('new1@x.test', '{"full_name":"  أحمد الإداري ","requested_mosque":"مسجد البحري"}'),
+         ('new2@x.test', '{}'),
+         ('new3@x.test', '{}');
+
+select t.login(t.uid('new1@x.test'));
+select t.expect((select count(*) from public.participants) = 0, 'حساب جديد بلا موافقة لا يرى أطفالًا');
+select t.expect((select count(*) from public.mosques) = 0, 'حساب جديد بلا موافقة لا يرى مساجد');
+select t.expect((select count(*) from public.attendance) = 0, 'حساب جديد بلا موافقة لا يرى حضورًا');
+select t.expect_err($$select * from public.owner_list_pending_users()$$, 'ERR_NOT_AUTHORIZED', 'غير المالك لا يرى الطلبات');
+select t.expect_err($$select public.owner_reject_signup(t.uid('new2@x.test'))$$, 'ERR_NOT_AUTHORIZED', 'غير المالك لا يرفض طلبات');
+select t.expect_err($$insert into public.profiles (user_id, display_name, role) values (t.uid('new1@x.test'), 'x', 'owner')$$,
+  'permission denied', 'لا يمنح نفسه دورًا');
+select t.logout();
+
+select t.login(t.uid('owner@x.test'));
+select t.expect((select count(*) from public.owner_list_pending_users() where email like 'new%') = 3, 'المالك يرى 3 طلبات معلقة');
+select t.expect((select count(*) from public.owner_list_pending_users() where email = 'stranger@x.test') = 1, 'أي حساب بلا ملف يظهر كطلب');
+select t.expect((select full_name from public.owner_list_pending_users() where email = 'new1@x.test') = 'أحمد الإداري', 'الاسم المُدخل يظهر منظفًا');
+select t.expect((select requested_mosque from public.owner_list_pending_users() where email = 'new1@x.test') = 'مسجد البحري', 'المسجد المطلوب يظهر');
+select t.expect((select full_name from public.owner_list_pending_users() where email = 'new2@x.test') is null, 'بلا بيانات إضافية = null');
+select public.owner_upsert_user('new1@x.test', 'أحمد الإداري', 'admin');
+select t.expect((select count(*) from public.owner_list_pending_users() where email like 'new%') = 2, 'الموافق عليه يخرج من الطلبات');
+select t.expect_err($$select public.owner_reject_signup(t.uid('new1@x.test'))$$, 'ERR_INVALID_INPUT', 'لا يُحذف منظم معتمد برفض الطلب');
+select public.owner_reject_signup(t.uid('new2@x.test'));
+select t.expect((select count(*) from public.owner_list_pending_users() where email like 'new%') = 1, 'الرفض يحذف الطلب');
 select t.logout();
 
 \echo '=== كل اختبارات قاعدة البيانات نجحت ==='
