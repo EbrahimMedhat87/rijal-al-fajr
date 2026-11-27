@@ -84,6 +84,7 @@ function handleRpc(name, body, uid) {
     server.calls.addParticipant = (server.calls.addParticipant || 0) + 1
     const ex = server.participants.find((x) => x.id === body.p_id)
     if (ex) return { status: 200, json: { status: 'already_synced', id: ex.id } }
+    if (server.participants.some((x) => x.mosque_id === body.p_mosque_id && nrm(x.name).join(' ') === nrm(body.p_name).join(' '))) return { status: 400, json: { message: 'ERR_DUPLICATE_NAME', code: 'P0001' } }
     const np = { id: body.p_id, name: body.p_name.trim(), active: true, mosque_id: body.p_mosque_id }; server.participants.push(np); assignNo(np)
     return { status: 200, json: { status: 'created', id: body.p_id } }
   }
@@ -121,7 +122,7 @@ function handleRpc(name, body, uid) {
     server.calls.similar = (server.calls.similar || 0) + 1
     const out = []
     body.p_names.forEach((nm, i) => {
-      const t = nrm(nm); if (t.length < 2) return
+      const t = nrm(nm); if (t.length < 1) return
       const k = Math.min(3, t.length)
       server.participants.filter((c) => c.mosque_id !== body.p_mosque_id).filter((c) => { const ct = nrm(c.name); return ct.length >= k && (t.length >= 3 || ct.length === t.length) && ct.slice(0, k).join(' ') === t.slice(0, k).join(' ') }).slice(0, 3)
         .forEach((c) => out.push({ idx: i + 1, participant_id: c.id, name: c.name, child_no: c.child_no, mosque_id: c.mosque_id, mosque_name: MOSQUES.find((m) => m.id === c.mosque_id).name }))
@@ -628,6 +629,22 @@ async function login(page, email) {
   await page.screenshot({ path: `${SHOTS}/10c-similar-warning.png` })
   await nameInput.fill('سامي رضا هاني'); await sleep(900)
   check('اسم مختلف: لا تنبيه', !(await page.locator('[role=dialog]').innerText()).includes('غالبًا مكرر'))
+  // اسم كلمة واحدة مطابق تمامًا لطفل في مسجد آخر ("سفيان") يُنبَّه أيضًا
+  const sufyan = { id: 'aaaaaaaa-9999-0000-0000-000000000001', name: 'سفيان', active: true, mosque_id: MB }
+  server.participants.push(sufyan); assignNo(sufyan)
+  await nameInput.fill('سفيان'); await sleep(900)
+  const stxt = await page.locator('[role=dialog]').innerText()
+  check('اسم من كلمة واحدة مطابق لطفل في مسجد آخر: ينبّه ("سفيان" عند مسجد الرحمة)', stxt.includes('غالبًا مكرر') && stxt.includes('سفيان') && stxt.includes('مسجد الرحمة'), stxt)
+  await page.screenshot({ path: `${SHOTS}/10c3-single-word-warning.png` })
+  server.participants = server.participants.filter((x) => x !== sufyan)
+  // نفس الاسم داخل نفس المسجد: مرفوض (لا زر "رغم ذلك")
+  await nameInput.fill('احمد'); await sleep(500)
+  const dupTxt = await page.locator('[role=dialog]').innerText()
+  check('نفس الاسم في نفس المسجد (أحمد = احمد): رسالة "موجود بالفعل" بالرقم والاسم', dupTxt.includes('الاسم موجود بالفعل في هذا المسجد') && dupTxt.includes('أحمد'), dupTxt)
+  check('نفس الاسم في نفس المسجد: زر الإضافة معطّل (رفض وليس تحذيرًا)', await page.locator('[role=dialog] button[type=submit]').isDisabled())
+  await page.screenshot({ path: `${SHOTS}/10c4-duplicate-blocked.png` })
+  await nameInput.fill('احمد - ع'); await sleep(500)
+  check('إضافة حرف مميز يفتح الزر', !(await page.locator('[role=dialog] button[type=submit]').isDisabled()) && !(await page.locator('[role=dialog]').innerText()).includes('موجود بالفعل في هذا المسجد'))
   // نقل الطفل بدل تكراره (مع بقاء سجل حضوره)
   const moveKid = server.participants.find((x) => x.name === 'علي حسن محمود')
   addAtt(moveKid.id, addDays(TODAY, -3)); addAtt(moveKid.id, addDays(TODAY, -4))

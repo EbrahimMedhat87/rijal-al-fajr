@@ -33,7 +33,6 @@ export default function Participants() {
   const [mosqueId, setMosqueId] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [confirmDup, setConfirmDup] = useState(false)
   const [serverSimilar, setServerSimilar] = useState<SimilarChild[] | null>(null)
   const [transferring, setTransferring] = useState<SimilarChild | null>(null)
 
@@ -64,7 +63,7 @@ export default function Participants() {
   useEffect(() => {
     setServerSimilar(null)
     setTransferring(null)
-    if (!adding || !online || !addMosque || normalizeArabic(name).split(' ').filter(Boolean).length < 2) return
+    if (!adding || !online || !addMosque || normalizeArabic(name).split(' ').filter(Boolean).length < 1) return
     let alive = true
     const t = setTimeout(() => {
       findSimilarChildren([name], addMosque)
@@ -98,16 +97,11 @@ export default function Participants() {
     setName('')
     setMosqueId('')
     setError(null)
-    setConfirmDup(false)
   }
 
   const submit = async (e: FormEvent) => {
     e.preventDefault()
-    if (!name.trim() || !addMosque) return
-    if (dupe && !confirmDup) {
-      setConfirmDup(true)
-      return
-    }
+    if (!name.trim() || !addMosque || dupe) return
     setBusy(true)
     setError(null)
     try {
@@ -200,7 +194,7 @@ export default function Participants() {
             {error && <Banner tone="red">{error}</Banner>}
             {activeMosques.length > 1 ? (
               <Field label="المسجد">
-                <select className={inputClass} value={addMosque} onChange={(e) => { setMosqueId(e.target.value); setConfirmDup(false) }}>
+                <select className={inputClass} value={addMosque} onChange={(e) => { setMosqueId(e.target.value); }}>
                   {activeMosques.map((m) => (
                     <option key={m.id} value={m.id}>{m.name}</option>
                   ))}
@@ -210,7 +204,7 @@ export default function Participants() {
               <div className="text-sm font-semibold text-brand-800">🕌 {mosqueName(addMosque)}</div>
             )}
             <Field label="اسم الطفل" hint="الاسم فقط — لا نجمع أي بيانات أخرى. لو تشابهت الأسماء أضف حرفًا مميزًا (مثال: محمد أحمد - ع).">
-              <input className={inputClass} value={name} maxLength={100} autoFocus required onChange={(e) => { setName(e.target.value); setConfirmDup(false) }} />
+              <input className={inputClass} value={name} maxLength={100} autoFocus required onChange={(e) => { setName(e.target.value); }} />
             </Field>
             {similar.length > 0 && (
               <Banner tone="gold">
@@ -239,11 +233,14 @@ export default function Participants() {
                 <div className="mt-2 text-xs">لو هو نفس الطفل انقله (ما تضفوش مرة ثانية). ولو طفل آخر أكمل الإضافة.</div>
               </Banner>
             )}
-            {confirmDup && dupe && (
-              <Banner tone="gold">يوجد طفل بنفس الاسم "{dupe.name}". اضغط "إضافة رغم ذلك" لو كان طفلًا آخر.</Banner>
+            {dupe && (
+              <Banner tone="red">
+                <b>الاسم موجود بالفعل في هذا المسجد:</b> {dupe.child_no != null && <b dir="ltr">#{dupe.child_no} </b>}{dupe.name}.
+                <div className="mt-1 text-xs">لو ده طفل تاني بنفس الاسم أضف حرفًا مميزًا (مثال: محمد أحمد - ع). ولو هو نفسه فمفيش داعي تضيفه تاني.</div>
+              </Banner>
             )}
-            <Button type="submit" block disabled={busy || !name.trim()}>
-              {busy ? 'جارٍ الحفظ…' : confirmDup || similar.length > 0 ? 'إضافة رغم ذلك' : 'إضافة'}
+            <Button type="submit" block disabled={busy || !name.trim() || !!dupe}>
+              {busy ? 'جارٍ الحفظ…' : similar.length > 0 ? 'إضافة رغم ذلك' : 'إضافة'}
             </Button>
           </form>
         </Modal>

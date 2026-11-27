@@ -593,7 +593,9 @@ select t.expect((select count(*) from public.find_similar_children(array['ابر
 select t.expect((select mosque_name from public.find_similar_children(array['ابراهيم مدحت محمد'], (select ma from mq)) limit 1) = 'مسجد الرحمة', 'الدالة ترجع اسم المسجد الآخر');
 select t.expect((select count(*) from public.find_similar_children(array['أحمد محمد علي'], (select ma from mq))) = 0, 'اسم أطول من اسم قصير لا يطابقه (أحمد محمد ≠ أحمد محمد علي)');
 select t.expect((select count(*) from public.find_similar_children(array['أحمد محمد'], (select ma from mq))) = 1, 'اسم من كلمتين يطابق بالكامل');
-select t.expect((select count(*) from public.find_similar_children(array['مريم'], (select ma from mq))) = 0, 'كلمة واحدة لا تُقارن أبدًا');
+select t.expect((select count(*) from public.find_similar_children(array['مريم'], (select ma from mq))) = 1, 'اسم من كلمة واحدة يُكشف لو مطابق تمامًا في مسجد آخر');
+select t.expect((select count(*) from public.find_similar_children(array['مريم أحمد'], (select ma from mq))) = 0, 'كلمة واحدة في الخادم لا تطابق اسمًا أطول');
+select t.expect((select count(*) from public.find_similar_children(array['', '  '], (select ma from mq))) = 0, 'أسماء فارغة لا تُطابق');
 select t.expect_err($$select * from public.find_similar_children(array['ابراهيم مدحت محمد'], (select mb from mq))$$, 'ERR_MOSQUE_NOT_ALLOWED', 'لا كشف باسم مسجد ليس للمشرف');
 select t.logout();
 
@@ -668,6 +670,30 @@ select t.expect((select public.delete_participant('dddddddd-0000-4000-8000-00000
 -- رقمه يصير فراغًا ويأخذه الطفل الجديد
 select public.add_participant('dddddddd-0000-4000-8000-0000000000d4', 'طفل بعد الحذف', (select ma from mq));
 select t.expect((select count(distinct child_no) = count(*) from public.participants where mosque_id = (select ma from mq)), 'الأرقام فريدة بعد الحذف والإضافة');
+select t.logout();
+
+-- ---------------------------------------------------------------------------
+-- 18) منع تكرار الاسم داخل المسجد الواحد
+-- ---------------------------------------------------------------------------
+select t.login(t.uid('owner@x.test'));
+select public.add_participant('eeeeeeee-0000-4000-8000-0000000000e1', 'أحمد سمير عادل', (select ma from mq));
+select t.expect_err($$select public.add_participant('eeeeeeee-0000-4000-8000-0000000000e2', 'احمد سمير عادل', (select ma from mq))$$, 'ERR_DUPLICATE_NAME', 'نفس الاسم (همزة مختلفة) مرفوض في نفس المسجد');
+select t.expect_err($$select public.add_participant('eeeeeeee-0000-4000-8000-0000000000e3', '  أحمد   سمير عادل ', (select ma from mq))$$, 'ERR_DUPLICATE_NAME', 'نفس الاسم مع مسافات زائدة مرفوض');
+select t.expect((select public.add_participant('eeeeeeee-0000-4000-8000-0000000000e1', 'أحمد سمير عادل', (select ma from mq))->>'status') = 'already_synced', 'إعادة إرسال نفس الطلب (نفس المعرّف) ما زالت idempotent');
+select t.expect((select public.add_participant('eeeeeeee-0000-4000-8000-0000000000e4', 'أحمد سمير عادل - ع', (select ma from mq))->>'status') = 'created', 'إضافة حرف مميز تسمح بنفس الاسم تقريبًا');
+select t.expect((select public.add_participant('eeeeeeee-0000-4000-8000-0000000000e5', 'أحمد سمير عادل', (select mb from mq))->>'status') = 'created', 'نفس الاسم في مسجد آخر مسموح (يُنبَّه فقط)');
+-- تعديل الاسم إلى اسم موجود مرفوض
+select t.expect_err($$update public.participants set name = 'احمد سمير عادل' where id = 'eeeeeeee-0000-4000-8000-0000000000e4'$$, 'ERR_DUPLICATE_NAME', 'إعادة تسمية إلى اسم موجود مرفوضة');
+-- نقل طفل إلى مسجد فيه نفس الاسم مرفوض
+select t.expect_err($$select public.transfer_child('eeeeeeee-0000-4000-8000-0000000000e5', (select ma from mq))$$, 'ERR_DUPLICATE_NAME', 'النقل إلى مسجد فيه نفس الاسم مرفوض');
+-- التكرارات القديمة لا تُمس: إيقاف طفل مكرر قديم ممكن (تعديل active لا يفعّل الفحص)
+select t.logout();
+alter table public.participants disable trigger participants_unique_name_trg;
+insert into public.participants (id, name, mosque_id) values ('eeeeeeee-0000-4000-8000-0000000000e6', 'أحمد سمير عادل', (select ma from mq));
+alter table public.participants enable trigger participants_unique_name_trg;
+select t.login(t.uid('owner@x.test'));
+update public.participants set active = false where id = 'eeeeeeee-0000-4000-8000-0000000000e6';
+select t.expect((select active from public.participants where id = 'eeeeeeee-0000-4000-8000-0000000000e6') = false, 'تكرار قديم يمكن إيقافه (الفحص يعمل فقط عند تغيير الاسم/المسجد)');
 select t.logout();
 
 \echo '=== كل اختبارات قاعدة البيانات نجحت ==='

@@ -16,6 +16,7 @@ const MESSAGES: Record<string, string> = {
   ERR_AUTH_USER_NOT_FOUND: 'لا يوجد حساب بهذا البريد — لازم المنظم ينشئ حسابه الأول من شاشة الدخول (منظم جديد؟ أنشئ حسابك)',
   ERR_INVALID_ROLE: 'دور غير صالح',
   ERR_INVALID_INPUT: 'بيانات غير صالحة',
+  ERR_DUPLICATE_NAME: 'الاسم موجود بالفعل في هذا المسجد — لو طفل آخر بنفس الاسم أضف حرفًا مميزًا (مثال: محمد أحمد - ع)',
   ERR_START_DATE_AFTER_ATTENDANCE: 'لا يمكن تأخير تاريخ البداية بعد سجلات حضور موجودة',
   ERR_CHILD_NOT_SAVED: 'الطفل نفسه لم يُقبَل من الخادم، فلم يُرسَل حضوره',
   ERR_UNKNOWN: 'خطأ غير متوقع'

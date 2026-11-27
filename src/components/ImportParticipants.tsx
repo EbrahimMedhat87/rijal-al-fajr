@@ -10,10 +10,10 @@ import { useToast } from '../lib/toast'
 
 const STATUS_LABEL: Record<ImportStatus, string> = {
   new: 'جديد',
-  exists: 'موجود بالفعل',
+  exists: 'موجود بالفعل (لن يُضاف)',
   existsElsewhere: 'موجود في مسجد آخر',
   similarElsewhere: 'يشبه طفلًا في مسجد آخر',
-  dupInList: 'مكرر في القائمة'
+  dupInList: 'مكرر في القائمة (لن يُضاف)'
 }
 
 /** يقرأ ملف نصي/CSV. UTF-8 أولًا؛ لو ظهرت حروف تالفة (ملفات Excel القديمة) نجرّب windows-1256. */
@@ -193,6 +193,7 @@ export default function ImportParticipants({ defaultMosqueId, onClose }: { defau
                     type="checkbox"
                     className="h-5 w-5 shrink-0"
                     checked={!skipped.has(i)}
+                    disabled={it.status === 'exists' || it.status === 'dupInList'}
                     onChange={(e) =>
                       setSkipped((s) => {
                         const n = new Set(s)

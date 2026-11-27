@@ -105,3 +105,17 @@ describe('planImport: معرّف الطفل في المسجد الآخر (لخي
     expect(r[1]).toMatchObject({ status: 'similarElsewhere', otherId: 'c2' })
   })
 })
+
+describe('الاسم من كلمة واحدة', () => {
+  const others = [
+    { id: 's1', name: 'سفيان', mosque_id: 'B' },
+    { id: 's2', name: 'سفيان محمد علي', mosque_id: 'B' }
+  ]
+  it('يُكشف لو مطابق تمامًا (سفيان = سفيان) ولا يطابق الأسماء الأطول', async () => {
+    const { findSimilarElsewhere } = await import('../src/lib/import')
+    expect(findSimilarElsewhere('سفيان', others, 'A').map((x) => x.id)).toEqual(['s1'])
+    expect(findSimilarElsewhere('سُفيان', others, 'A').map((x) => x.id)).toEqual(['s1'])
+    expect(findSimilarElsewhere('سفيان', others, 'B')).toEqual([])
+    expect(findSimilarElsewhere('', others, 'A')).toEqual([])
+  })
+})

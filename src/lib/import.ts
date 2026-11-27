@@ -75,12 +75,12 @@ export interface SimilarMatch {
 /**
  * أطفال في مساجد أخرى "غالبًا هم نفسه": أول 3 كلمات متطابقة (بعد تطبيع الهمزات والتاء المربوطة…).
  * مثال: "إبراهيم مدحت محمد" ≈ "ابراهيم مدحت محمد رفاعي".
- * الاسم الأقصر من 3 كلمات يُقارَن بالكامل فقط (حتى لا يُطابق "أحمد محمد" كل من يبدأ به).
- * الاسم من كلمة واحدة لا يُقارَن أبدًا.
+ * الاسم الأقصر من 3 كلمات يُقارَن بالكامل وبنفس عدد الكلمات (حتى لا يُطابق "أحمد محمد" كل من يبدأ به)،
+ * فالاسم من كلمة واحدة ("سفيان") يُكشف فقط لو يوجد طفل اسمه "سفيان" بالضبط في مسجد آخر.
  */
 export function findSimilarElsewhere<T extends SimilarMatch>(name: string, existing: T[], mosqueId: string): T[] {
   const t = tokens(name)
-  if (t.length < 2) return []
+  if (t.length < 1) return []
   const k = Math.min(3, t.length)
   const head = t.slice(0, k).join(' ')
   return existing.filter((c) => {
