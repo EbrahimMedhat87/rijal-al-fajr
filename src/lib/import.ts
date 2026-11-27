@@ -60,11 +60,14 @@ export interface ImportItem {
   otherMosque?: string
   /** الاسم الكامل للطفل المشابه في المسجد الآخر */
   similarTo?: string
+  /** معرّف الطفل في المسجد الآخر (لخيار النقل) */
+  otherId?: string
 }
 
 const tokens = (s: string): string[] => normalizeArabic(s).split(' ').filter(Boolean)
 
 export interface SimilarMatch {
+  id?: string
   name: string
   mosque_id: string
 }
@@ -90,6 +93,7 @@ export function findSimilarElsewhere<T extends SimilarMatch>(name: string, exist
 }
 
 interface ExistingChild {
+  id?: string
   name: string
   mosque_id: string
 }
@@ -105,11 +109,11 @@ export function planImport(
   mosqueName: (id: string) => string
 ): ImportItem[] {
   const same = new Set<string>()
-  const other = new Map<string, string>()
+  const other = new Map<string, { mosqueId: string; id?: string }>()
   for (const c of existing) {
     const k = normalizeArabic(c.name)
     if (c.mosque_id === mosqueId) same.add(k)
-    else if (!other.has(k)) other.set(k, c.mosque_id)
+    else if (!other.has(k)) other.set(k, { mosqueId: c.mosque_id, id: c.id })
   }
   const seen = new Set<string>()
   return names.map((name) => {
@@ -118,9 +122,9 @@ export function planImport(
     seen.add(k)
     if (same.has(k)) return { name, status: 'exists' as const }
     const o = other.get(k)
-    if (o) return { name, status: 'existsElsewhere' as const, otherMosque: mosqueName(o) }
+    if (o) return { name, status: 'existsElsewhere' as const, otherMosque: mosqueName(o.mosqueId), otherId: o.id }
     const sim = findSimilarElsewhere(name, existing, mosqueId)[0]
-    if (sim) return { name, status: 'similarElsewhere' as const, otherMosque: mosqueName(sim.mosque_id), similarTo: sim.name }
+    if (sim) return { name, status: 'similarElsewhere' as const, otherMosque: mosqueName(sim.mosque_id), similarTo: sim.name, otherId: sim.id }
     return { name, status: 'new' as const }
   })
 }

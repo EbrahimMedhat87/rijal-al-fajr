@@ -93,3 +93,15 @@ describe('findSimilarElsewhere (أول 3 كلمات)', () => {
     expect(r[0]).toMatchObject({ status: 'similarElsewhere', otherMosque: 'مسجد ب', similarTo: 'ابراهيم مدحت محمد رفاعي' })
   })
 })
+
+describe('planImport: معرّف الطفل في المسجد الآخر (لخيار النقل)', () => {
+  it('existsElsewhere و similarElsewhere يحملان otherId', () => {
+    const existing = [
+      { id: 'c1', name: 'أحمد محمد علي', mosque_id: 'B' },
+      { id: 'c2', name: 'إبراهيم مدحت محمد رفاعي', mosque_id: 'B' }
+    ]
+    const r = planImport(['احمد محمد علي', 'ابراهيم مدحت محمد'], existing, 'A', () => 'مسجد ب')
+    expect(r[0]).toMatchObject({ status: 'existsElsewhere', otherId: 'c1' })
+    expect(r[1]).toMatchObject({ status: 'similarElsewhere', otherId: 'c2' })
+  })
+})

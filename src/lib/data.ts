@@ -1,6 +1,6 @@
 // طبقة الوصول للبيانات: كل استدعاءات Supabase هنا. الأخطاء ترفع Error ليتعامل معها المستدعي.
 import type { PostgrestError } from '@supabase/supabase-js'
-import { db, getMeta, replaceAttendanceCache, replaceMosques, replaceParticipants, setMeta } from './db'
+import { clearLocalAttendance, db, getMeta, replaceAttendanceCache, replaceMosques, replaceParticipants, setMeta } from './db'
 import { supabase } from './supabase'
 import type { Campaign, DateRange, Mosque, Participant, Profile, Role } from './types'
 
@@ -38,17 +38,18 @@ export const cachedCampaign = () => getMeta<Campaign>(db, 'campaign')
 // ---------------- الأطفال والحضور (مع الكاش المحلي) ----------------
 export async function refreshParticipants(): Promise<void> {
   const rows = await fetchAll<Participant>((f, t) =>
-    supabase.from('participants').select('id, name, active, mosque_id').order('name').range(f, t)
+    supabase.from('participants').select('id, name, active, mosque_id, child_no').order('name').range(f, t)
   )
   await replaceParticipants(db, rows)
   await setMeta(db, 'participantsSyncedAt', Date.now())
 }
 
 export async function refreshAttendanceDate(date: string): Promise<void> {
+  const startedAt = Date.now()
   const rows = await fetchAll<{ participant_id: string }>((f, t) =>
     supabase.from('attendance').select('participant_id').eq('attendance_date', date).eq('status', 'valid').range(f, t)
   )
-  await replaceAttendanceCache(db, date, rows.map((r) => r.participant_id))
+  await replaceAttendanceCache(db, date, rows.map((r) => r.participant_id), startedAt)
 }
 
 export async function addParticipant(name: string, mosqueId: string): Promise<void> {
@@ -71,11 +72,50 @@ export async function addParticipantsBulk(names: string[], mosqueId: string): Pr
   return added
 }
 
-export async function updateParticipant(id: string, patch: { name?: string; active?: boolean; mosque_id?: string }): Promise<void> {
+export async function updateParticipant(id: string, patch: { name?: string; active?: boolean; mosque_id?: string; child_no?: number }): Promise<void> {
   const res = await supabase.from('participants').update(patch).eq('id', id).select('id')
   const rows = check(res) as { id: string }[]
   if (!rows || rows.length === 0) throw new Error('permission denied')
   await refreshParticipants()
+}
+
+/** إلغاء حضور مسجَّل بالخطأ (يحتاج إنترنت). 'stale' = الخادم لا يعرف له حضورًا أصلًا (بقايا محلية) فنُنظّف الجهاز فقط. */
+export async function undoAttendance(participantId: string, date: string): Promise<'voided' | 'stale'> {
+  let result: 'voided' | 'stale' = 'voided'
+  try {
+    check(await supabase.rpc('undo_attendance', { p_participant_id: participantId, p_date: date }))
+  } catch (e) {
+    if (/ERR_ATTENDANCE_NOT_FOUND/.test((e as { message?: string })?.message ?? '')) result = 'stale'
+    else throw e
+  }
+  await clearLocalAttendance(db, participantId, date)
+  return result
+}
+
+export interface SimilarChild {
+  idx: number
+  participant_id: string
+  name: string
+  child_no: number | null
+  mosque_id: string
+  mosque_name: string
+}
+
+/** أطفال في مساجد أخرى بنفس أول 3 كلمات (المشرف لا يرى أطفال المساجد الأخرى مباشرة، فالمقارنة تتم في الخادم) */
+export async function findSimilarChildren(names: string[], mosqueId: string): Promise<SimilarChild[]> {
+  const out: SimilarChild[] = []
+  for (let i = 0; i < names.length; i += 500) {
+    const chunk = names.slice(i, i + 500)
+    const rows = (check(await supabase.rpc('find_similar_children', { p_names: chunk, p_mosque_id: mosqueId })) ?? []) as SimilarChild[]
+    out.push(...rows.map((r) => ({ ...r, idx: r.idx - 1 + i })))
+  }
+  return out
+}
+
+/** نقل طفل إلى مسجد آخر مع بقاء سجل حضوره كله */
+export async function transferChild(participantId: string, toMosqueId: string): Promise<void> {
+  check(await supabase.rpc('transfer_child', { p_participant_id: participantId, p_to_mosque_id: toMosqueId }))
+  await refreshParticipants().catch(() => undefined)
 }
 
 // ---------------- الترتيب والتقارير ----------------
@@ -86,6 +126,7 @@ export interface CountRowDb {
   mosque_id: string
   mosque_name: string
   days: number
+  child_no?: number | null
 }
 
 export async function fetchCounts(range: DateRange, mosqueId: string | null = null): Promise<CountRowDb[]> {

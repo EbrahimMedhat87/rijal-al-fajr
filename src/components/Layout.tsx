@@ -87,7 +87,9 @@ export default function Layout() {
         </div>
       </header>
 
-      <main className="min-w-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain px-4 pb-6 pt-4">
+      <main className="min-w-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-contain px-4 pb-6">
+        {/* مسافة علوية بعنصر عادي وليست padding: iOS Safari يحسب padding الحاوية في موضع الـ sticky فيظهر المحتوى فوق شريط البحث */}
+        <div aria-hidden className="h-4" />
         {session.offlineMode && (
           <div className="mb-3">
             <Banner tone="blue">أنت تعمل بدون اتصال. يمكنك تسجيل الحضور وسيُحفَظ على هذا الجهاز ويُرسَل تلقائيًا عند عودة الإنترنت.</Banner>

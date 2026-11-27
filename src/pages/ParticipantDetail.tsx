@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { Badge, Banner, Button, Card, Empty, Field, Modal, Spinner, inputClass } from '../components/ui'
+import { Badge, Banner, Button, Card, ChildNo, Empty, Field, Modal, Spinner, inputClass } from '../components/ui'
 import { useAppData } from '../lib/app-data'
 import { canManage, useSession } from '../lib/auth'
 import {
@@ -34,6 +34,7 @@ export default function ParticipantDetail() {
   const [editing, setEditing] = useState(false)
   const [newName, setNewName] = useState('')
   const [newMosque, setNewMosque] = useState('')
+  const [newNo, setNewNo] = useState('')
   const [busy, setBusy] = useState(false)
   const [formError, setFormError] = useState<string | null>(null)
 
@@ -97,7 +98,15 @@ export default function ParticipantDetail() {
     setBusy(true)
     setFormError(null)
     try {
-      await updateParticipant(id, { name: newName, ...(newMosque && participant && newMosque !== participant.mosque_id ? { mosque_id: newMosque } : {}) })
+      const moving = !!newMosque && !!participant && newMosque !== participant.mosque_id
+      const no = Number(newNo)
+      if (!moving && newNo.trim() !== '' && (!Number.isInteger(no) || no < 1 || no > 99999)) throw new Error('ERR_INVALID_INPUT')
+      await updateParticipant(id, {
+        name: newName,
+        ...(moving ? { mosque_id: newMosque } : {}),
+        // الرقم يُعدَّل فقط لو تغيّر (والنقل لمسجد آخر يعطيه رقمًا جديدًا تلقائيًا)
+        ...(!moving && newNo.trim() !== '' && no !== participant?.child_no ? { child_no: no } : {})
+      })
       toast('success', 'تم الحفظ')
       setEditing(false)
     } catch (err) {
@@ -125,7 +134,10 @@ export default function ParticipantDetail() {
       <Link to="/participants" className="text-sm font-semibold text-brand-700">← الأطفال</Link>
       <div className="flex items-start justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-brand-900">{participant.name}</h1>
+          <h1 className="flex items-center gap-2 text-2xl font-bold text-brand-900">
+            <ChildNo n={participant.child_no} />
+            <span>{participant.name}</span>
+          </h1>
           <div className="mt-1 flex flex-wrap gap-1.5">
             {participant.active ? <Badge tone="green">نشط</Badge> : <Badge tone="gray">موقوف</Badge>}
             {participant.mosque_id && <Badge tone="blue">🕌 {mosqueName(participant.mosque_id)}</Badge>}
@@ -135,7 +147,7 @@ export default function ParticipantDetail() {
 
       {manage && (
         <div className="flex gap-2">
-          <Button variant="secondary" className="flex-1" disabled={!online} onClick={() => { setNewName(participant.name); setNewMosque(participant.mosque_id); setEditing(true); setFormError(null) }}>
+          <Button variant="secondary" className="flex-1" disabled={!online} onClick={() => { setNewName(participant.name); setNewMosque(participant.mosque_id); setNewNo(participant.child_no != null ? String(participant.child_no) : ''); setEditing(true); setFormError(null) }}>
             تعديل البيانات
           </Button>
           <Button variant="secondary" className="flex-1" disabled={!online} onClick={() => void toggleActive()}>
@@ -223,6 +235,9 @@ export default function ParticipantDetail() {
             {formError && <Banner tone="red">{formError}</Banner>}
             <Field label="الاسم">
               <input className={inputClass} value={newName} maxLength={100} required autoFocus onChange={(e) => setNewName(e.target.value)} />
+            </Field>
+            <Field label="رقم الطفل في المسجد" hint="يتولّد تلقائيًا. غيّره فقط لو عاوز يطابق ترقيم كشفكم الورقي (لازم يكون غير مستخدم).">
+              <input className={inputClass} dir="ltr" inputMode="numeric" pattern="[0-9]*" value={newNo} onChange={(e) => setNewNo(e.target.value.replace(/\D/g, ''))} />
             </Field>
             {mosques.filter((m) => m.active || m.id === participant.mosque_id).length > 1 && (
               <Field label="المسجد" hint="نقل الطفل لمسجد آخر ينقل معه تاريخ حضوره.">

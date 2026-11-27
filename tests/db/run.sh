@@ -19,4 +19,6 @@ psql -X -q -t -A -v ON_ERROR_STOP=1 -d "$DB" -f 10_tests.sql 2>&1 | grep -v "^$"
 
 echo ">> concurrency test (جهازان في نفس اللحظة)"
 bash ./20_concurrency.sh "$DB"
+echo ">> upgrade-path test"
+bash ./30_upgrade.sh | tail -1
 echo "ALL DB TESTS PASSED"

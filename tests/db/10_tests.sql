@@ -495,4 +495,135 @@ select t.login_anon();
 select t.expect_err($$select public.add_participant(gen_random_uuid(), 'x', (select ma from mq))$$, 'permission denied', 'anon لا ينفذ الدالة');
 select t.logout();
 
+-- ---------------------------------------------------------------------------
+-- 15) رقم الطفل داخل المسجد + إلغاء الحضور
+-- ---------------------------------------------------------------------------
+select t.login(t.uid('owner@x.test'));
+select t.expect((select count(*) from public.participants where child_no is null) = 0, 'كل الأطفال لهم رقم');
+select t.expect((select count(distinct child_no) = count(*) from public.participants where mosque_id = (select ma from mq)), 'الأرقام فريدة داخل المسجد');
+select public.add_participant('aaaaaaaa-0000-4000-8000-0000000000a1', 'طفل رقم', (select ma from mq));
+select public.add_participant('aaaaaaaa-0000-4000-8000-0000000000a2', 'طفل رقم 2', (select ma from mq));
+select public.add_participant('aaaaaaaa-0000-4000-8000-0000000000a3', 'طفل رقم 3', (select ma from mq));
+select t.expect((select count(distinct child_no) = count(*) from public.participants where mosque_id = (select ma from mq)), 'الأرقام فريدة بعد الإضافات');
+-- نقل a2 إلى مسجد آخر: يأخذ (أعلى رقم + 1) هناك، ورقمه القديم يصير فراغًا في مسجده القديم
+create temp table gapinfo as select child_no as g from public.participants where id = 'aaaaaaaa-0000-4000-8000-0000000000a2';
+select public.transfer_child('aaaaaaaa-0000-4000-8000-0000000000a2', (select mb from mq));
+select t.expect((select child_no from public.participants where id = 'aaaaaaaa-0000-4000-8000-0000000000a2') = (select max(child_no) + 1 from public.participants where mosque_id = (select mb from mq) and id <> 'aaaaaaaa-0000-4000-8000-0000000000a2'), 'المنقول يأخذ أعلى رقم + 1 في المسجد الجديد');
+select t.expect((select count(*) from public.participants where mosque_id = (select ma from mq) and child_no = (select g from gapinfo)) = 0, 'رقمه القديم صار فاضيًا في المسجد القديم');
+-- طفل جديد في المسجد القديم يملأ الفراغ بدل أن يأخذ رقمًا أكبر
+select public.add_participant('aaaaaaaa-0000-4000-8000-0000000000a4', 'طفل يملأ الفراغ', (select ma from mq));
+select t.expect((select child_no from public.participants where id = 'aaaaaaaa-0000-4000-8000-0000000000a4') = (select g from gapinfo), 'الطفل الجديد أخذ الرقم الفاضي');
+select public.add_participant('aaaaaaaa-0000-4000-8000-0000000000a5', 'طفل بعد الفراغ', (select ma from mq));
+select t.expect((select child_no from public.participants where id = 'aaaaaaaa-0000-4000-8000-0000000000a5') = (select max(child_no) + 1 from public.participants where mosque_id = (select ma from mq) and id <> 'aaaaaaaa-0000-4000-8000-0000000000a5'), 'لا فراغات ⇒ يأخذ أعلى رقم + 1');
+-- ترتيب الأسماء لا يغيّر الأرقام: الأرقام ثابتة لأصحابها
+select t.expect((select child_no from public.participants where id = 'aaaaaaaa-0000-4000-8000-0000000000a1') < (select child_no from public.participants where id = 'aaaaaaaa-0000-4000-8000-0000000000a3'), 'أرقام الباقين لم تتغيّر');
+-- تعديل الرقم يدويًا
+update public.participants set child_no = 500 where id = 'aaaaaaaa-0000-4000-8000-0000000000a1';
+select t.expect((select child_no from public.participants where id = 'aaaaaaaa-0000-4000-8000-0000000000a1') = 500, 'تعديل الرقم يدويًا');
+select t.expect_err($$update public.participants set child_no = (select min(child_no) from public.participants where mosque_id = (select ma from mq) and id <> 'aaaaaaaa-0000-4000-8000-0000000000a1') where id = 'aaaaaaaa-0000-4000-8000-0000000000a1'$$, 'participants_mosque_child_no_key', 'رقم مكرر في نفس المسجد مرفوض');
+select t.expect_err($$update public.participants set child_no = 0 where id = 'aaaaaaaa-0000-4000-8000-0000000000a1'$$, 'ERR_INVALID_INPUT', 'رقم صفر مرفوض');
+update public.participants set mosque_id = (select mb from mq) where id = 'aaaaaaaa-0000-4000-8000-0000000000a1';
+select t.expect((select count(distinct child_no) = count(*) from public.participants where mosque_id = (select mb from mq)), 'الأرقام فريدة في المسجد الآخر أيضًا');
+select t.logout();
+
+select t.login(t.uid('rec1@x.test'));
+update public.participants set child_no = 77 where mosque_id = (select ma from mq);
+select t.expect((select count(*) from public.participants where child_no = 77) = 0, 'المسجِّل لا يعدّل الأرقام');
+select t.logout();
+
+-- إلغاء الحضور
+insert into public.participants (name, mosque_id) values ('إلغاء 1', (select ma from mq)), ('إلغاء 2', (select ma from mq));
+create temp table up as select
+  (select id from public.participants where name = 'إلغاء 1') as p1,
+  (select id from public.participants where name = 'إلغاء 2') as p2,
+  public.campaign_today() as today;
+grant select on up to authenticated;
+
+select t.login(t.uid('rec1@x.test'));
+select public.record_attendance('00000000-0000-0000-0000-00000000c001', p1, today, now()) from up;
+select t.expect((select public.undo_attendance(p1, today)->>'status' from up) = 'voided', 'المسجِّل يلغي حضورًا سجّله بنفسه');
+select t.expect((select count(*) from public.attendance a, up where a.participant_id = up.p1 and a.attendance_date = up.today and a.status = 'valid') = 0, 'لا سجل صالح بعد الإلغاء');
+select t.expect((select void_reason from public.attendance a, up where a.participant_id = up.p1 and a.status = 'void') = 'تسجيل بالخطأ', 'السبب الافتراضي "تسجيل بالخطأ"');
+select t.expect_err($$select public.undo_attendance((select p1 from up), (select today from up))$$, 'ERR_ATTENDANCE_NOT_FOUND', 'إلغاء ما لا حضور له مرفوض');
+select t.expect((select public.record_attendance('00000000-0000-0000-0000-00000000c002', p1, today, now())->>'status' from up) = 'created', 'يمكن إعادة التسجيل بعد الإلغاء');
+select t.expect((select count(*) from public.attendance a, up where a.participant_id = up.p1 and a.attendance_date = up.today and a.status = 'valid') = 1, 'سجل صالح واحد بعد إعادة التسجيل');
+select t.logout();
+
+select t.login(t.uid('rec2@x.test'));
+select public.record_attendance('00000000-0000-0000-0000-00000000c003', p2, today, now()) from up;
+select t.logout();
+select t.login(t.uid('rec1@x.test'));
+select t.expect_err($$select public.undo_attendance((select p2 from up), (select today from up))$$, 'ERR_NOT_AUTHORIZED', 'المسجِّل لا يلغي حضور مسجِّل آخر');
+select t.logout();
+
+select t.login(t.uid('admin@x.test'));
+select t.expect((select public.undo_attendance(p2, today, '  سجّله مسجل بالخطأ ')->>'status' from up) = 'voided', 'المشرف يلغي حضور أي مسجِّل في مسجده');
+select t.expect((select void_reason from public.attendance a, up where a.participant_id = up.p2 and a.status = 'void') = 'سجّله مسجل بالخطأ', 'السبب المُدخل يُنظَّف ويُحفَظ');
+select t.expect((select count(*) from public.audit_log where action = 'attendance.void' and details->>'via' = 'undo') = 2, 'الإلغاء مسجّل في سجل التدقيق');
+select t.logout();
+
+select t.login(t.uid('owner@x.test'));
+select public.owner_upsert_user('admin2@x.test', 'مشرف الرحمة', 'admin');
+select public.owner_set_user_mosques(t.uid('admin2@x.test'), array[(select mb from mq)]);
+select t.logout();
+select t.login(t.uid('admin2@x.test'));
+select t.expect_err($$select public.undo_attendance((select p1 from up), (select today from up))$$, 'ERR_MOSQUE_NOT_ALLOWED', 'مشرف مسجد آخر لا يلغي');
+select t.logout();
+select t.login(t.uid('stranger@x.test'));
+select t.expect_err($$select public.undo_attendance((select p1 from up), (select today from up))$$, 'ERR_NOT_AUTHORIZED', 'حساب بلا ملف لا يلغي');
+select t.logout();
+select t.login_anon();
+select t.expect_err($$select public.undo_attendance((select p1 from up), (select today from up))$$, 'permission denied', 'anon لا ينفذ الدالة');
+select t.logout();
+
+-- ---------------------------------------------------------------------------
+-- 16) كشف التكرار بين المساجد + نقل الطفل
+-- ---------------------------------------------------------------------------
+select t.login(t.uid('owner@x.test'));
+select public.add_participant('bbbbbbbb-0000-4000-8000-0000000000b1', 'إبراهيم مدحت محمد رفاعي', (select mb from mq));
+select public.add_participant('bbbbbbbb-0000-4000-8000-0000000000b2', 'أحمد محمد', (select mb from mq));
+select public.add_participant('bbbbbbbb-0000-4000-8000-0000000000b3', 'مريم', (select mb from mq));
+select t.logout();
+
+select t.login(t.uid('admin@x.test'));
+-- المشرف لا يرى أطفال مسجد الرحمة مباشرة (عزل المساجد)
+select t.expect((select count(*) from public.participants where id = 'bbbbbbbb-0000-4000-8000-0000000000b1') = 0, 'المشرف لا يرى طفل مسجد آخر');
+-- لكنه يكتشف التشابه عبر الدالة (أول 3 كلمات، تطبيع الهمزات)
+select t.expect((select count(*) from public.find_similar_children(array['ابراهيم مدحت محمد'], (select ma from mq))) = 1, 'إبراهيم مدحت محمد ≈ ابراهيم مدحت محمد رفاعي');
+select t.expect((select mosque_name from public.find_similar_children(array['ابراهيم مدحت محمد'], (select ma from mq)) limit 1) = 'مسجد الرحمة', 'الدالة ترجع اسم المسجد الآخر');
+select t.expect((select count(*) from public.find_similar_children(array['أحمد محمد علي'], (select ma from mq))) = 0, 'اسم أطول من اسم قصير لا يطابقه (أحمد محمد ≠ أحمد محمد علي)');
+select t.expect((select count(*) from public.find_similar_children(array['أحمد محمد'], (select ma from mq))) = 1, 'اسم من كلمتين يطابق بالكامل');
+select t.expect((select count(*) from public.find_similar_children(array['مريم'], (select ma from mq))) = 0, 'كلمة واحدة لا تُقارن أبدًا');
+select t.expect_err($$select * from public.find_similar_children(array['ابراهيم مدحت محمد'], (select mb from mq))$$, 'ERR_MOSQUE_NOT_ALLOWED', 'لا كشف باسم مسجد ليس للمشرف');
+select t.logout();
+
+select t.login(t.uid('rec1@x.test'));
+select t.expect_err($$select * from public.find_similar_children(array['س ص'], (select ma from mq))$$, 'ERR_NOT_AUTHORIZED', 'المسجِّل لا يكشف');
+select t.expect_err($$select public.transfer_child('bbbbbbbb-0000-4000-8000-0000000000b1', (select ma from mq))$$, 'ERR_NOT_AUTHORIZED', 'المسجِّل لا ينقل');
+select t.logout();
+
+-- لطفل مسجد الرحمة حضور سابق يجب أن يبقى بعد النقل
+select t.login(t.uid('admin2@x.test'));
+select public.record_attendance('00000000-0000-0000-0000-00000000d001', 'bbbbbbbb-0000-4000-8000-0000000000b1', public.campaign_today(), now());
+select t.logout();
+
+select t.login(t.uid('admin@x.test'));
+select t.expect_err($$select public.transfer_child('bbbbbbbb-0000-4000-8000-0000000000b9', (select ma from mq))$$, 'ERR_PARTICIPANT_NOT_FOUND', 'لا نقل لطفل غير موجود');
+select t.expect_err($$select public.transfer_child('bbbbbbbb-0000-4000-8000-0000000000b1', (select mb from mq))$$, 'ERR_MOSQUE_NOT_ALLOWED', 'المشرف لا ينقل إلى مسجد ليس له');
+select t.expect((select public.transfer_child('bbbbbbbb-0000-4000-8000-0000000000b1', (select ma from mq))->>'status') = 'transferred', 'المشرف ينقل الطفل إلى مسجده');
+select t.expect((select mosque_id from public.participants where id = 'bbbbbbbb-0000-4000-8000-0000000000b1') = (select ma from mq), 'الطفل صار في المسجد الجديد');
+select t.expect((select count(*) from public.attendance where participant_id = 'bbbbbbbb-0000-4000-8000-0000000000b1' and status = 'valid') = 1, 'سجل الحضور القديم بقي مع الطفل');
+select t.expect((select days from public.attendance_counts(public.campaign_today() - 1, public.campaign_today(), null) where participant_id = 'bbbbbbbb-0000-4000-8000-0000000000b1') = 1, 'الأيام تُحسب في الترتيب بعد النقل') ;
+select t.expect((select public.transfer_child('bbbbbbbb-0000-4000-8000-0000000000b1', (select ma from mq))->>'status') = 'already_there', 'النقل لنفس المسجد لا يفعل شيئًا');
+select t.expect((select count(*) from public.audit_log where action = 'participant.transfer' and entity_id = 'bbbbbbbb-0000-4000-8000-0000000000b1') = 1, 'النقل مسجّل في سجل التدقيق');
+select t.logout();
+
+select t.login(t.uid('stranger@x.test'));
+select t.expect_err($$select public.transfer_child('bbbbbbbb-0000-4000-8000-0000000000b2', (select ma from mq))$$, 'ERR_NOT_AUTHORIZED', 'حساب بلا ملف لا ينقل');
+select t.logout();
+select t.login_anon();
+select t.expect_err($$select * from public.find_similar_children(array['س ص'], (select ma from mq))$$, 'permission denied', 'anon لا ينفذ find_similar_children');
+select t.expect_err($$select public.transfer_child('bbbbbbbb-0000-4000-8000-0000000000b2', (select ma from mq))$$, 'permission denied', 'anon لا ينفذ transfer_child');
+select t.logout();
+
 \echo '=== كل اختبارات قاعدة البيانات نجحت ==='

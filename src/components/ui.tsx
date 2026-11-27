@@ -41,6 +41,21 @@ export function Badge({ tone = 'gray', children }: { tone?: Tone; children: Reac
   return <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold ${tones[tone]}`}>{children}</span>
 }
 
+/** رقم الطفل داخل مسجده (يظهر قبل الاسم). لا يُرسم شيء لو لا رقم. */
+export function ChildNo({ n }: { n: number | null | undefined }) {
+  if (n == null) return null
+  return (
+    <span
+      dir="ltr"
+      data-testid="child-no"
+      aria-label={`رقم ${n}`}
+      className="inline-flex min-w-9 shrink-0 items-center justify-center rounded-lg bg-brand-900 px-2 py-0.5 text-sm font-bold text-white tabular-nums"
+    >
+      {n}
+    </span>
+  )
+}
+
 export function Banner({ tone = 'gold', children }: { tone?: 'gold' | 'red' | 'green' | 'blue'; children: ReactNode }) {
   const c = {
     gold: 'border-gold-400 bg-gold-100 text-brand-900',

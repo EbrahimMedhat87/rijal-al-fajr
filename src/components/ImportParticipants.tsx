@@ -1,10 +1,11 @@
 import { useMemo, useRef, useState } from 'react'
 import { Badge, Banner, Button, Field, Modal, inputClass } from './ui'
 import { useAppData } from '../lib/app-data'
-import { addParticipantsBulk } from '../lib/data'
+import { addParticipantsBulk, findSimilarChildren, transferChild, type SimilarChild } from '../lib/data'
 import { useAllParticipants } from '../lib/participants'
 import { errorToArabic } from '../lib/errors'
 import { parseNameList, planImport, type ImportStatus } from '../lib/import'
+import { useOnline } from '../lib/hooks'
 import { useToast } from '../lib/toast'
 
 const STATUS_LABEL: Record<ImportStatus, string> = {
@@ -32,26 +33,69 @@ export default function ImportParticipants({ defaultMosqueId, onClose }: { defau
   const { mosques, mosqueName } = useAppData()
   const activeMosques = mosques.filter((m) => m.active)
   const existing = useAllParticipants()
+  const online = useOnline()
 
   const [mosqueId, setMosqueId] = useState(defaultMosqueId)
   const [text, setText] = useState('')
   const [step, setStep] = useState<'input' | 'preview'>('input')
   const [skipped, setSkipped] = useState<Set<number>>(new Set())
   const [busy, setBusy] = useState(false)
+  const [checking, setChecking] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // نتائج مقارنة الخادم (المشرف لا يرى أطفال المساجد الأخرى محليًا): الاسم ← أول طفل مشابه
+  const [serverMatches, setServerMatches] = useState<Map<string, SimilarChild>>(new Map())
+  const [confirmIdx, setConfirmIdx] = useState<number | null>(null)
+  const [moved, setMoved] = useState<Set<number>>(new Set())
   const fileRef = useRef<HTMLInputElement>(null)
 
-  const items = useMemo(
-    () => (step === 'preview' ? planImport(parseNameList(text), existing ?? [], mosqueId, mosqueName) : []),
-    [step, text, existing, mosqueId, mosqueName]
-  )
+  const items = useMemo(() => {
+    if (step !== 'preview') return []
+    return planImport(parseNameList(text), existing ?? [], mosqueId, mosqueName).map((it) => {
+      const m = it.status === 'new' ? serverMatches.get(it.name) : undefined
+      return m ? { ...it, status: 'similarElsewhere' as const, otherMosque: m.mosque_name, similarTo: m.name, otherId: m.participant_id } : it
+    })
+  }, [step, text, existing, mosqueId, mosqueName, serverMatches])
 
-  const goPreview = () => {
-    const parsed = planImport(parseNameList(text), existing ?? [], mosqueId, mosqueName)
-    // الجديد فقط يُحدَّد تلقائيًا؛ الباقي يبقى مستبعدًا (ويمكن تحديده يدويًا)
-    setSkipped(new Set(parsed.flatMap((p, i) => (p.status === 'new' ? [] : [i]))))
+  const goPreview = async () => {
     setError(null)
+    setMoved(new Set())
+    setConfirmIdx(null)
+    const names = parseNameList(text)
+    let matches = new Map<string, SimilarChild>()
+    if (online) {
+      setChecking(true)
+      try {
+        const rows = await findSimilarChildren(names, mosqueId)
+        for (const r of rows) if (!matches.has(names[r.idx])) matches.set(names[r.idx], r)
+      } catch {
+        matches = new Map() // لا نمنع الاستيراد لو فشل الفحص؛ يبقى فحص الجهاز فقط
+      } finally {
+        setChecking(false)
+      }
+    }
+    setServerMatches(matches)
+    const parsed = planImport(names, existing ?? [], mosqueId, mosqueName)
+    // الجديد فقط يُحدَّد تلقائيًا؛ الباقي يبقى مستبعدًا (ويمكن تحديده يدويًا)
+    setSkipped(new Set(parsed.flatMap((p, i) => (p.status === 'new' && !matches.has(p.name) ? [] : [i]))))
     setStep('preview')
+  }
+
+  const doMove = async (i: number) => {
+    const id = items[i]?.otherId
+    if (!id) return
+    setBusy(true)
+    setError(null)
+    try {
+      await transferChild(id, mosqueId)
+      setMoved((m) => new Set(m).add(i))
+      setSkipped((s) => new Set(s).add(i))
+      toast('success', `تم نقل ${items[i].similarTo ?? items[i].name} إلى ${mosqueName(mosqueId)} — سجل حضوره محفوظ`)
+    } catch (e) {
+      setError(errorToArabic(e))
+    } finally {
+      setConfirmIdx(null)
+      setBusy(false)
+    }
   }
 
   const onFile = async (f: File | undefined) => {
@@ -129,8 +173,8 @@ export default function ImportParticipants({ defaultMosqueId, onClose }: { defau
             />
             <Button variant="secondary" block onClick={() => fileRef.current?.click()}>📄 أو اختر ملف (.txt / .csv)</Button>
           </div>
-          <Button block disabled={parsedCount === 0 || !mosqueId} onClick={goPreview}>
-            {parsedCount > 0 ? `معاينة (${parsedCount} اسم)` : 'معاينة'}
+          <Button block disabled={parsedCount === 0 || !mosqueId || checking} onClick={() => void goPreview()}>
+            {checking ? 'جارٍ فحص التكرار…' : parsedCount > 0 ? `معاينة (${parsedCount} اسم)` : 'معاينة'}
           </Button>
         </div>
       ) : (
@@ -162,6 +206,21 @@ export default function ImportParticipants({ defaultMosqueId, onClose }: { defau
                     <span className="block text-brand-900">{it.name}</span>
                     {it.status === 'existsElsewhere' && <span className="block text-xs text-brand-700">عند {it.otherMosque}</span>}
                     {it.status === 'similarElsewhere' && <span className="block text-xs text-brand-700">عند {it.otherMosque}: {it.similarTo}</span>}
+                    {moved.has(i) && <span className="block text-xs font-semibold text-brand-800">✓ تم نقله إلى هذا المسجد</span>}
+                    {online && it.otherId && !moved.has(i) && (it.status === 'existsElsewhere' || it.status === 'similarElsewhere') && (
+                      confirmIdx === i ? (
+                        <span className="mt-1 flex items-center gap-2">
+                          <button type="button" disabled={busy} onClick={(e) => { e.preventDefault(); void doMove(i) }} className="min-h-9 rounded-lg bg-gold-500 px-3 text-xs font-bold text-brand-900">
+                            {busy ? 'جارٍ النقل…' : `تأكيد: انقله من ${it.otherMosque}`}
+                          </button>
+                          <button type="button" disabled={busy} onClick={(e) => { e.preventDefault(); setConfirmIdx(null) }} className="min-h-9 px-2 text-xs text-brand-700">رجوع</button>
+                        </span>
+                      ) : (
+                        <button type="button" onClick={(e) => { e.preventDefault(); setConfirmIdx(i) }} className="mt-1 min-h-9 rounded-lg border border-gold-400 bg-gold-100 px-3 text-xs font-bold text-brand-900">
+                          نقله هنا بدل تكراره (يحتفظ بسجل حضوره)
+                        </button>
+                      )
+                    )}
                   </span>
                   {it.status !== 'new' && <Badge tone={it.status === 'existsElsewhere' || it.status === 'similarElsewhere' ? 'blue' : 'gold'}>{STATUS_LABEL[it.status]}</Badge>}
                 </label>

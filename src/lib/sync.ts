@@ -102,6 +102,22 @@ export class SyncEngine {
     })
   }
 
+  /**
+   * يلغي حضورًا لم يصل للخادم بعد (محفوظ على الجهاز فقط) — بدون إنترنت.
+   * 'busy' = الإرسال جارٍ في هذه اللحظة: لا نحذفه حتى لا يصل للخادم بعد أن ظنّ المستخدم أنه ألغاه.
+   */
+  async cancelPending(participantId: string, date: string): Promise<'cancelled' | 'none' | 'busy'> {
+    const { db } = this
+    return db.transaction('rw', db.queue, async () => {
+      const ops = await db.queue.where('[participantId+date]').equals([participantId, date]).toArray()
+      if (ops.some((o) => o.status === 'syncing')) return 'busy' as const
+      const mine = ops.filter((o) => o.status === 'pending' || o.status === 'failed')
+      if (mine.length === 0) return 'none' as const
+      await db.queue.bulkDelete(mine.map((o) => o.opId))
+      return 'cancelled' as const
+    })
+  }
+
   /** يحفظ طفلًا جديدًا محليًا (يظهر فورًا في القوائم والتحضير) ويُرسَل للخادم في المزامنة. */
   async enqueueChild(userId: string, name: string, mosqueId: string): Promise<QueuedChild> {
     const child: QueuedChild = {
@@ -154,7 +170,7 @@ export class SyncEngine {
       try {
         await this.backend.createParticipant({ id: kid.id, name: kid.name, mosqueId: kid.mosque_id })
         await db.transaction('rw', db.newChildren, db.participants, async () => {
-          await db.participants.put({ id: kid.id, name: kid.name, active: true, mosque_id: kid.mosque_id })
+          await db.participants.put({ id: kid.id, name: kid.name, active: true, mosque_id: kid.mosque_id, child_no: null })
           await db.newChildren.delete(kid.id)
         })
         summary.childrenCreated++

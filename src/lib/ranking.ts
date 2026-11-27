@@ -5,6 +5,7 @@ export interface CountRow {
   name: string
   active: boolean
   days: number
+  childNo?: number | null
   mosqueName?: string
 }
 

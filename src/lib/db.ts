@@ -48,13 +48,42 @@ export async function setMeta(d: AppDb, key: string, value: unknown): Promise<vo
 
 export const attendanceKey = (date: string, participantId: string) => `${date}|${participantId}`
 
-/** يستبدل كاش الحضور المعروف من الخادم لتاريخ معيّن */
-export async function replaceAttendanceCache(d: AppDb, date: string, participantIds: string[]): Promise<void> {
-  await d.transaction('rw', d.attendanceCache, async () => {
+/**
+ * يستبدل كاش الحضور المعروف من الخادم لتاريخ معيّن.
+ * لو مُرِّر fetchStartedAt: العمليات "المتزامنة" محليًا التي لا أثر لها في رد الخادم (أُلغي حضورها أو حُذف من جهاز آخر)
+ * تُحذف حتى لا يظهر الطفل "حاضرًا" وهو غير مسجَّل فعلًا. ما حدث بعد بدء الجلب لا يُمس (سباق مع مزامنة جارية).
+ */
+export async function replaceAttendanceCache(
+  d: AppDb,
+  date: string,
+  participantIds: string[],
+  fetchStartedAt?: number
+): Promise<void> {
+  await d.transaction('rw', d.attendanceCache, d.queue, async () => {
     await d.attendanceCache.where('date').equals(date).delete()
     await d.attendanceCache.bulkPut(
       participantIds.map((participantId) => ({ key: attendanceKey(date, participantId), date, participantId }))
     )
+    if (fetchStartedAt !== undefined) {
+      const onServer = new Set(participantIds)
+      await d.queue
+        .where('date')
+        .equals(date)
+        .and((o) => o.status === 'synced' && !onServer.has(o.participantId) && o.updatedAt < fetchStartedAt)
+        .delete()
+    }
+  })
+}
+
+/** يمسح أي أثر محلي لحضور طفل في تاريخ (بعد إلغائه من الخادم) */
+export async function clearLocalAttendance(d: AppDb, participantId: string, date: string): Promise<void> {
+  await d.transaction('rw', d.attendanceCache, d.queue, async () => {
+    await d.attendanceCache.delete(attendanceKey(date, participantId))
+    await d.queue
+      .where('[participantId+date]')
+      .equals([participantId, date])
+      .and((o) => o.status === 'synced' || o.status === 'failed')
+      .delete()
   })
 }
 

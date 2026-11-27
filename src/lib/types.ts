@@ -13,6 +13,8 @@ export interface Participant {
   name: string
   active: boolean
   mosque_id: string
+  /** رقم الطفل داخل مسجده (فريد في المسجد) — غير موجود للطفل الذي لم يُرسَل بعد */
+  child_no?: number | null
 }
 
 export interface Mosque {
@@ -74,6 +76,7 @@ export interface RankedRow {
   name: string
   active: boolean
   days: number
+  childNo?: number | null
   mosqueName?: string
   rank: number | null // null = بدون حضور في الفترة (غير مُرتَّب)
 }

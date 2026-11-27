@@ -33,6 +33,7 @@ export function errorToArabic(e: unknown): string {
   if (m) return arabicError(m[0])
   if (/not recognized/i.test(msg)) return 'اسم المنطقة الزمنية غير صحيح (مثال: Africa/Cairo)'
   if (/failed to fetch|network|load failed/i.test(msg)) return MESSAGES.NETWORK
+  if (/participants_mosque_child_no_key/.test(msg)) return 'الرقم ده مستخدم لطفل آخر في نفس المسجد'
   if (/duplicate key/i.test(msg)) return 'الاسم مستخدم من قبل'
   if (/row-level security|permission denied/i.test(msg)) return MESSAGES.ERR_NOT_AUTHORIZED
   return 'حدث خطأ غير متوقع، حاول مرة أخرى'

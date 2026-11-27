@@ -44,6 +44,16 @@ const server = {
   token: null
 }
 const P = (i) => server.participants[i].id
+// رقم الطفل داخل المسجد (مثل الخادم): تسلسلي لكل مسجد، ولا يُعاد استخدامه
+// طفل جديد: أصغر رقم فاضي (يملأ الفراغات) | طفل منقول (moved=true): أعلى رقم + 1
+const assignNo = (p, moved = false) => {
+  const used = new Set(server.participants.filter((x) => x !== p && x.mosque_id === p.mosque_id).map((x) => x.child_no))
+  if (moved) { p.child_no = Math.max(0, ...used) + 1; return }
+  let n = 1; while (used.has(n)) n++
+  p.child_no = n
+}
+server.participants.forEach((p) => assignNo(p))
+const nrm = (s) => s.normalize('NFKC').replace(/[\u064B-\u065F\u0670\u0640]/g, '').replace(/[أإآٱ]/g, 'ا').replace(/ى/g, 'ي').replace(/ة/g, 'ه').toLowerCase().trim().replace(/\s+/g, ' ').split(' ').filter(Boolean)
 let seq = 0
 function addAtt(pid, date, by = USERS['owner@x.test'].id, op = `seed-${++seq}`) {
   server.attendance.push({ id: `att-${++seq}`, participant_id: pid, attendance_date: date, status: 'valid', recorded_by: by, recorded_at: new Date().toISOString(), client_op_id: op, void_reason: null })
@@ -62,7 +72,7 @@ function counts(from, to, mosqueId = null) {
   return server.participants
     .filter((p) => !mosqueId || p.mosque_id === mosqueId)
     .map((p) => ({
-      participant_id: p.id, name: p.name, active: p.active, mosque_id: p.mosque_id, mosque_name: MOSQUES.find((m) => m.id === p.mosque_id).name,
+      participant_id: p.id, name: p.name, active: p.active, child_no: p.child_no, mosque_id: p.mosque_id, mosque_name: MOSQUES.find((m) => m.id === p.mosque_id).name,
       days: server.attendance.filter((a) => a.participant_id === p.id && a.status === 'valid' && a.attendance_date >= from && a.attendance_date <= to).length
     }))
 }
@@ -73,7 +83,7 @@ function handleRpc(name, body, uid) {
     server.calls.addParticipant = (server.calls.addParticipant || 0) + 1
     const ex = server.participants.find((x) => x.id === body.p_id)
     if (ex) return { status: 200, json: { status: 'already_synced', id: ex.id } }
-    server.participants.push({ id: body.p_id, name: body.p_name.trim(), active: true, mosque_id: body.p_mosque_id })
+    const np = { id: body.p_id, name: body.p_name.trim(), active: true, mosque_id: body.p_mosque_id }; server.participants.push(np); assignNo(np)
     return { status: 200, json: { status: 'created', id: body.p_id } }
   }
   if (name === 'record_attendance') {
@@ -87,6 +97,32 @@ function handleRpc(name, body, uid) {
     const row = { id: `att-${++seq}`, participant_id: body.p_participant_id, attendance_date: body.p_date, status: 'valid', recorded_by: uid, recorded_at: new Date().toISOString(), client_op_id: body.p_client_op_id, void_reason: null }
     server.attendance.push(row)
     return { status: 200, json: { status: 'created', attendance_id: row.id } }
+  }
+  if (name === 'undo_attendance') {
+    server.calls.undo = (server.calls.undo || 0) + 1
+    const row = server.attendance.find((a) => a.participant_id === body.p_participant_id && a.attendance_date === body.p_date && a.status === 'valid')
+    if (!row) return { status: 400, json: { message: 'ERR_ATTENDANCE_NOT_FOUND', code: 'P0002' } }
+    if (u.role === 'recorder' && row.recorded_by !== uid) return { status: 400, json: { message: 'ERR_NOT_AUTHORIZED', code: '42501' } }
+    row.status = 'void'; row.void_reason = body.p_reason || 'تسجيل بالخطأ'
+    return { status: 200, json: { status: 'voided', attendance_id: row.id } }
+  }
+  if (name === 'find_similar_children') {
+    server.calls.similar = (server.calls.similar || 0) + 1
+    const out = []
+    body.p_names.forEach((nm, i) => {
+      const t = nrm(nm); if (t.length < 2) return
+      const k = Math.min(3, t.length)
+      server.participants.filter((c) => c.mosque_id !== body.p_mosque_id).filter((c) => { const ct = nrm(c.name); return ct.length >= k && (t.length >= 3 || ct.length === t.length) && ct.slice(0, k).join(' ') === t.slice(0, k).join(' ') }).slice(0, 3)
+        .forEach((c) => out.push({ idx: i + 1, participant_id: c.id, name: c.name, child_no: c.child_no, mosque_id: c.mosque_id, mosque_name: MOSQUES.find((m) => m.id === c.mosque_id).name }))
+    })
+    return { status: 200, json: out }
+  }
+  if (name === 'transfer_child') {
+    const c = server.participants.find((x) => x.id === body.p_participant_id)
+    if (!c) return { status: 400, json: { message: 'ERR_PARTICIPANT_NOT_FOUND', code: 'P0002' } }
+    if (c.mosque_id === body.p_to_mosque_id) return { status: 200, json: { status: 'already_there' } }
+    c.mosque_id = body.p_to_mosque_id; assignNo(c, true); server.calls.transfer = (server.calls.transfer || 0) + 1
+    return { status: 200, json: { status: 'transferred' } }
   }
   if (name === 'attendance_counts') {
     if (u.role === 'recorder') return { status: 403, json: { message: 'ERR_NOT_AUTHORIZED', code: '42501' } }
@@ -189,7 +225,7 @@ async function setupMock(context, state) {
       if (method === 'POST') {
         const b = JSON.parse(req.postData() || '{}')
         const rows = (Array.isArray(b) ? b : [b]).map((x, idx) => ({ id: `aaaaaaaa-1111-0000-0000-${String(server.participants.length + 100 + idx).padStart(12, '0')}`, name: x.name, active: true, mosque_id: x.mosque_id }))
-        rows.forEach((r) => server.participants.push(r))
+        rows.forEach((r) => { server.participants.push(r); assignNo(r) })
         server.bulkCalls = (server.bulkCalls || 0) + 1
         return wantsObject ? ok(rows[0], 201) : ok(rows, 201)
       }
@@ -303,12 +339,60 @@ async function login(page, email) {
   console.log(`   NOW=${NOW.toISOString()}  Cairo=${TODAY}  UTC=${utcDate}  NewYork(device)=${nyDate}`)
   check('تاريخ السجل = تاريخ القاهرة (لا انزياح بتوقيت الجهاز)', server.attendance.some((a) => a.attendance_date === TODAY && a.recorded_by === USERS['owner@x.test'].id && a.participant_id === P(0)))
   check('الصف يتحول إلى "حاضر"', (await page.locator('li:has-text("أحمد")').innerText()).includes('حاضر'))
-  check('الزر يُعطَّل بعد التسجيل (لا ضغط مزدوج)', await page.locator('li:has-text("أحمد") button').isDisabled())
+  check('الزر يُعطَّل بعد التسجيل (لا ضغط مزدوج)', await page.locator('button[aria-label="أحمد — حاضر"]').isDisabled())
 
   // ---- 3) بحث بالعربية يتجاهل الهمزة
-  await page.fill('input[type=search]', 'ابراهيم')
+  await page.fill('input[type=search]', 'ابراهيم'); await sleep(200)
   check('البحث "ابراهيم" يجد "إبراهيم"', (await page.locator('li:has-text("إبراهيم")').count()) === 1)
-  await page.fill('input[type=search]', '')
+  await page.fill('input[type=search]', ''); await sleep(200)
+
+  // ---- 3ب) رقم الطفل + البحث بالرقم
+  check('كل صف يعرض رقم الطفل (6 أرقام)', (await page.locator('main li [data-testid=child-no]').count()) === 6, String(await page.locator('main li [data-testid=child-no]').count()) + ' / li=' + (await page.locator('main li').count()))
+  check('أحمد رقمه 1 (أول طفل في مسجد النور) وإبراهيم رقمه 1 في مسجد الرحمة', (await page.locator('li:has-text("أحمد") [data-testid=child-no]').innerText()).trim() === '1' && (await page.locator('li:has-text("إبراهيم") [data-testid=child-no]').innerText()).trim() === '1')
+  await page.fill('input[type=search]', '2'); await sleep(200)
+  check('البحث بالرقم "2": يظهر الطفل رقم 2 (محمد) فقط', (await page.locator('main li').count()) === 1 && (await page.locator('main li').innerText()).includes('محمد'), await page.locator('main li').allInnerTexts().then((x) => x.join('|')))
+  await page.fill('input[type=search]', '٣'); await sleep(200)
+  check('البحث بالرقم العربي "٣": يظهر يوسف', (await page.locator('main li').count()) === 1 && (await page.locator('main li').innerText()).includes('يوسف'))
+  await page.fill('input[type=search]', '9'); await sleep(200)
+  check('رقم غير موجود: لا نتائج', (await page.locator('main li').count()) === 0)
+  await page.fill('input[type=search]', ''); await sleep(200)
+
+  // ---- 3ج) شريط البحث الثابت: لا يترك فراغًا فوقه يمرّ منه المحتوى (مشكلة iOS: padding الحاوية يُحسب في موضع sticky)
+  await page.setViewportSize({ width: 390, height: 430 })
+  await sleep(300)
+  const geo0 = await page.evaluate(() => {
+    const main = document.querySelector('main'); const bar = document.querySelector('input[type=search]').parentElement
+    const mainTop = main.getBoundingClientRect().top
+    main.scrollTop = 99999
+    return { padTop: getComputedStyle(main).paddingTop, scrollable: main.scrollHeight > main.clientHeight, barTop: Math.round(bar.getBoundingClientRect().top - mainTop), barPos: getComputedStyle(bar).position }
+  })
+  await sleep(100)
+  const geo = await page.evaluate(() => {
+    const main = document.querySelector('main'); const bar = document.querySelector('input[type=search]').parentElement
+    const mt = main.getBoundingClientRect().top; const bb = bar.getBoundingClientRect()
+    // أي صف ظاهر جزئيًا بين أعلى الحاوية وأعلى الشريط؟
+    const peeking = [...main.querySelectorAll('ul li')].filter((li) => { const r = li.getBoundingClientRect(); return r.bottom > mt + 1 && r.top < bb.top - 1 && r.bottom <= bb.top + 1 })
+    return { barTop: Math.round(bb.top - mt), peeking: peeking.length }
+  })
+  check('الحاوية بلا padding علوي (حل مشكلة iOS) والشريط sticky', geo0.padTop === '0px' && geo0.barPos === 'sticky', JSON.stringify(geo0))
+  check('بعد التمرير: الشريط ملتصق بأعلى الحاوية بلا فراغ، ولا صفوف تمرّ فوقه', geo0.scrollable && geo.barTop === 0 && geo.peeking === 0, JSON.stringify({ geo0, geo }))
+  await page.screenshot({ path: `${SHOTS}/03b-sticky.png` })
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.evaluate(() => { document.querySelector('main').scrollTop = 0 })
+
+  // ---- 3د) إلغاء الحضور (أونلاين): أحمد سُجّل خطأً
+  check('صف الحاضر فيه زر "إلغاء" وصف غير الحاضر بدونه', (await page.locator('button[aria-label="إلغاء حضور أحمد"]').count()) === 1 && (await page.locator('button[aria-label="إلغاء حضور محمد"]').count()) === 0)
+  await page.click('button[aria-label="إلغاء حضور أحمد"]'); await page.waitForSelector('[role=dialog]')
+  await page.screenshot({ path: `${SHOTS}/03c-undo-confirm.png` })
+  await page.click('[role=dialog] button:has-text("رجوع")'); await sleep(200)
+  check('الرجوع من التأكيد لا يلغي شيئًا', countToday() === 1 && !server.calls.undo)
+  await page.click('button[aria-label="إلغاء حضور أحمد"]')
+  await page.click('[role=dialog] button:has-text("نعم، ألغِ الحضور")'); await sleep(1000)
+  check('إلغاء الحضور: السجل صار void في الخادم مع السبب', countToday() === 0 && server.attendance.some((a) => a.participant_id === P(0) && a.attendance_date === TODAY && a.status === 'void' && a.void_reason === 'تسجيل بالخطأ'))
+  check('الصف رجع "لم يُسجَّل" (زر حاضر) وبلا زر إلغاء', (await page.locator('button[aria-label^="أحمد — تسجيل حضور"]').count()) === 1 && (await page.locator('button[aria-label="إلغاء حضور أحمد"]').count()) === 0)
+  check('العدّاد رجع صفرًا', (await page.locator('main .text-3xl').first().innerText()).trim() === '0' && !(await page.locator('li:has-text("أحمد")').innerText()).includes('✓'))
+  await page.click('button:has-text("أحمد")'); await sleep(1200)
+  check('يمكن إعادة تسجيل الحضور بعد الإلغاء (سجل صالح جديد)', countToday() === 1 && server.attendance.filter((a) => a.participant_id === P(0) && a.attendance_date === TODAY).length === 2)
 
   // ---- 4) أوفلاين: تسجيل، إغلاق/إعادة فتح، عودة الاتصال
   await context.setOffline(true)
@@ -322,6 +406,16 @@ async function login(page, email) {
   check('أوفلاين: لم يصل شيء للخادم', server.attendance.length === before)
   check('الشريط يعرض عدد المعلّق', (await page.locator('header').innerText()).includes('1 بانتظار المزامنة'))
 
+  // إلغاء حضور محفوظ على الجهاز فقط (يعمل بدون إنترنت)
+  await page.click('button[aria-label="إلغاء حضور محمد"]')
+  await page.click('[role=dialog] button:has-text("نعم، ألغِ الحضور")'); await sleep(500)
+  check('أوفلاين: إلغاء حضور معلّق يحذفه محليًا بدون إنترنت', (await page.locator('li:has-text("محمد")').innerText()).includes('حاضر') && (await page.locator('button[aria-label^="محمد — تسجيل حضور"]').count()) === 1 && (await idbCount('queue')) === 1 && !(await page.locator('header').innerText()).includes('بانتظار المزامنة'))
+  // حضور أحمد وصل للخادم: إلغاؤه يحتاج إنترنت
+  await page.click('button[aria-label="إلغاء حضور أحمد"]')
+  await page.click('[role=dialog] button:has-text("نعم، ألغِ الحضور")'); await sleep(500)
+  check('أوفلاين: إلغاء حضور وصل للخادم يرفض برسالة "يحتاج إنترنت" ويبقى حاضرًا', (await page.locator('body').innerText()).includes('يحتاج إنترنت') && (await page.locator('li:has-text("أحمد")').innerText()).includes('✓') && countToday() === 1)
+  await page.click('[role=dialog] button:has-text("رجوع")'); await sleep(200)
+  await page.click('button:has-text("محمد")'); await sleep(300)
   await page.click('button:has-text("يوسف")'); await sleep(300)
   await page.screenshot({ path: `${SHOTS}/04-offline.png` })
   check('معلّقان محليًا', (await idbCount('queue')) === 3)
@@ -333,6 +427,20 @@ async function login(page, email) {
   const reopened = await page.locator('li:has-text("محمد")').innerText().catch(() => 'FAILED_TO_OPEN')
   check('إعادة فتح التطبيق بدون إنترنت تعمل وتُبقي السجل المعلّق', reopened.includes('محفوظ على الجهاز'), reopened)
   await page.screenshot({ path: `${SHOTS}/05-offline-reopened.png` })
+
+  // "حضور وهمي": عملية متزامنة قديمة على الجهاز (الخادم لا يعرف لها حضورًا — أُلغي من مكان آخر)
+  await page.evaluate(() => new Promise((res, rej) => {
+    const r = indexedDB.open('rijal-al-fajr'); r.onerror = () => rej(r.error)
+    r.onsuccess = () => {
+      const d = r.result; const tx = d.transaction('queue', 'readwrite')
+      const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Cairo' }).format(new Date())
+      tx.objectStore('queue').put({ opId: 'stale-op-1', userId: '11111111-1111-1111-1111-111111111111', participantId: 'aaaaaaaa-0000-0000-0000-000000000004', date: today, deviceCreatedAt: new Date(1000).toISOString(), status: 'synced', attempts: 0, serverResult: 'created', updatedAt: Date.now() - 120000 })
+      tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error)
+    }
+  }))
+  await page.reload()
+  await page.waitForSelector('button:has-text("محمد")', { timeout: 15000 }).catch(() => {})
+  check('(قبل التصحيح) أوفلاين: الحضور الوهمي لعمر يظهر "حاضر" بسبب بقايا محلية', (await page.locator('li:has-text("عمر")').innerText()).includes('✓'), await page.locator('li:has-text("عمر")').innerText())
 
   // ---- 5) تعارض: جهاز آخر سجّل "خالد" أثناء انقطاعنا
   await page.click('button:has-text("خالد")'); await sleep(300)
@@ -346,6 +454,7 @@ async function login(page, email) {
   const byPid = (i) => todayRows.filter((a) => a.participant_id === P(i)).length
   check('بعد عودة الاتصال: محمد ويوسف سُجّلا في الخادم', byPid(1) === 1 && byPid(2) === 1)
   check('تعارض خالد: سجل صالح واحد فقط (لا تكرار)', byPid(4) === 1)
+  check('(بعد التصحيح) عند الاتصال: الحضور الوهمي لعمر اختفى لأن الخادم لا يعرفه، وصار قابلًا للتسجيل', !(await page.locator('li:has-text("عمر")').innerText()).includes('✓') && (await page.locator('button[aria-label^="عمر — تسجيل حضور"]').count()) === 1 && (await idbCount('queue')) >= 1 && !(await page.evaluate(() => new Promise((res) => { const r = indexedDB.open('rijal-al-fajr'); r.onsuccess = () => { const q = r.result.transaction('queue').objectStore('queue').get('stale-op-1'); q.onsuccess = () => res(!!q.result) } }))))
   const body = await page.locator('main').innerText()
   check('الشريط: كل شيء متزامن بعد المزامنة', (await page.locator('header').innerText()).includes('كل شيء متزامن'))
   check('المنظم يُبلَّغ أن خالد سُجّل مسبقًا من جهاز آخر (على الصف نفسه)', (await page.locator('li:has-text("خالد")').innerText()).includes('سُجِّل مسبقًا من جهاز آخر'))
@@ -444,6 +553,21 @@ async function login(page, email) {
   check('رفع CSV: يقرأ الأسماء بالعربية (معاينة 2)', (await page.locator('button:has-text("معاينة")').innerText()).includes('2'), await page.locator('button:has-text("معاينة")').innerText())
   await page.click('button[aria-label="إغلاق"]')
 
+  // استيراد اسم يشبه طفلًا في مسجد آخر: الفحص من الخادم + نقله بدل تكراره
+  await page.click('button:has-text("استيراد")'); await page.waitForSelector('textarea')
+  await page.selectOption('[role=dialog] select', MA)
+  await page.fill('textarea', 'سعيد عبد الله الجمال\nفارس نادر عادل')
+  await page.click('button:has-text("معاينة")')
+  await page.waitForSelector('ul[aria-label="معاينة الأسماء"]')
+  const simRows = await page.locator('ul[aria-label="معاينة الأسماء"] li').evaluateAll((els) => els.map((e) => ({ t: e.innerText.replace(/\s+/g, ' ').trim(), on: e.querySelector('input').checked })))
+  check('الاستيراد: الاسم المشابه (من الخادم) يظهر "يشبه طفلًا في مسجد آخر" وغير محدد، والجديد محدد', simRows[0].t.includes('يشبه طفلًا في مسجد آخر') && simRows[0].t.includes('سعيد عبد الله') && !simRows[0].on && simRows[1].on, JSON.stringify(simRows))
+  await page.screenshot({ path: `${SHOTS}/10e-import-similar.png` })
+  const sKid = server.participants.find((x) => x.name === 'سعيد عبد الله')
+  await page.click('ul[aria-label="معاينة الأسماء"] li:first-child button:has-text("نقله هنا")')
+  await page.click('button:has-text("تأكيد: انقله من")'); await sleep(900)
+  check('الاستيراد: النقل بدل التكرار ينقل الطفل لمسجد النور ويُستبعد من الإضافة', sKid.mosque_id === MA && (await page.locator('text=تم نقله إلى هذا المسجد').count()) === 1 && (await page.locator('button:has-text("إضافة 1 طفل")').count()) === 1)
+  await page.click('button[aria-label="إغلاق"]')
+
   // ---- 9د) ترتيب المساجد
   await page.goto(BASE + '/rankings'); await page.waitForSelector('text=ترتيب المساجد'); await sleep(500)
   await page.click('button:has-text("منذ البداية")'); await sleep(500)
@@ -455,7 +579,7 @@ async function login(page, email) {
   await page.click('button:has-text("ترتيب الأطفال")'); await sleep(600)
   await page.click('button:has-text("مسجد الرحمة")'); await sleep(900)
   const crow = await page.locator('ol li').evaluateAll((els) => els.map((e) => e.innerText.replace(/\s+/g, ' ').trim()))
-  check('ترتيب الأطفال مع تصفية مسجد: أطفال الرحمة فقط', crow.length === 4 && crow.every((t) => !t.includes('أحمد')), crow.join(' | '))
+  check('ترتيب الأطفال مع تصفية مسجد: أطفال الرحمة فقط', crow.length === 3 && crow.every((t) => !t.includes('أحمد')), crow.join(' | '))
 
   // ---- 9هـ) طلبات التسجيل: قبول وربط بمسجد
   await page.goto(BASE + '/admin'); await page.waitForSelector('text=طلبات تسجيل جديدة'); await sleep(400)
@@ -476,15 +600,26 @@ async function login(page, email) {
   await page.click('button:has-text("مسجد النور")'); await sleep(200)
   await page.click('button:has-text("+ إضافة")'); await page.waitForSelector('[role=dialog]')
   const nameInput = page.locator('[role=dialog] input').first()
-  await nameInput.fill('علي حسن محمود الشريف'); await sleep(200)
+  await nameInput.fill('علي حسن محمود الشريف'); await sleep(900)
+  check('التنبيه يُحسب في الخادم (المشرف لا يرى أطفال المساجد الأخرى)', (server.calls.similar || 0) >= 1)
   const dtxt = await page.locator('[role=dialog]').innerText()
   check('تنبيه الاسم المشابه: يذكر "غالبًا مكرر" واسم الطفل والمسجد الآخر', dtxt.includes('غالبًا مكرر') && dtxt.includes('علي حسن محمود') && dtxt.includes('مسجد الرحمة'), dtxt)
   check('الزر يصبح "إضافة رغم ذلك" (لا منع، فقط تنبيه)', (await page.locator('[role=dialog] button[type=submit]').innerText()).includes('رغم ذلك'))
   await page.screenshot({ path: `${SHOTS}/10c-similar-warning.png` })
-  await nameInput.fill('سامي رضا هاني'); await sleep(200)
+  await nameInput.fill('سامي رضا هاني'); await sleep(900)
   check('اسم مختلف: لا تنبيه', !(await page.locator('[role=dialog]').innerText()).includes('غالبًا مكرر'))
-  await nameInput.fill('اسلام مدحت'); await sleep(100)
-  await page.click('button[aria-label="إغلاق"]')
+  // نقل الطفل بدل تكراره (مع بقاء سجل حضوره)
+  const moveKid = server.participants.find((x) => x.name === 'علي حسن محمود')
+  addAtt(moveKid.id, addDays(TODAY, -3)); addAtt(moveKid.id, addDays(TODAY, -4))
+  const oldNo = moveKid.child_no
+  await nameInput.fill('علي حسن محمود الشريف'); await sleep(900)
+  await page.click('[role=dialog] button:has-text("نقله هنا بدل تكراره")')
+  check('النقل يطلب تأكيدًا ويشرح أن السجل يبقى', (await page.locator('[role=dialog]').innerText()).includes('بيفضل معاه'))
+  await page.screenshot({ path: `${SHOTS}/10c2-transfer-confirm.png` })
+  await page.click('[role=dialog] button:has-text("تأكيد النقل")'); await sleep(900)
+  check('النقل: الطفل صار في مسجد النور بنفس الاسم والمعرّف (لا تكرار)', moveKid.mosque_id === MA && server.participants.filter((x) => x.name === 'علي حسن محمود').length === 1 && server.calls.transfer === 2 /* الأولى من الاستيراد */, JSON.stringify({ m: moveKid.mosque_id, n: server.participants.filter((x) => x.name === 'علي حسن محمود').length, t: server.calls.transfer }))
+  check('النقل: يأخذ رقمًا جديدًا في المسجد الجديد وسجل حضوره (يومان) باقٍ', moveKid.child_no === Math.max(...server.participants.filter((x) => x !== moveKid && x.mosque_id === MA).map((x) => x.child_no)) + 1 && server.attendance.filter((a) => a.participant_id === moveKid.id && a.status === 'valid').length === 2, `${oldNo} -> ${moveKid.child_no}`)
+  check('بعد النقل: يُغلق النموذج ويظهر الطفل في قائمة النور', (await page.locator('[role=dialog]').count()) === 0 && (await page.locator('main li:has-text("علي حسن محمود")').count()) === 1)
 
   // ---- 9ز) إضافة طفل بدون إنترنت ثم مزامنته (مع حضوره)
   await page.click('button:has-text("مسجد الرحمة")'); await sleep(300)
@@ -509,6 +644,7 @@ async function login(page, email) {
   await sleep(4000)
   const newKid = server.participants.find((x) => x.name === 'طفل أوفلاين تجربة')
   check('بعد عودة الاتصال: الطفل أُنشئ في الخادم في المسجد الصحيح (مرة واحدة)', !!newKid && newKid.mosque_id === MB && server.participants.filter((x) => x.name === 'طفل أوفلاين تجربة').length === 1 && server.calls.addParticipant === 1)
+  check('الطفل الجديد في الرحمة أخذ أصغر رقم فاضي (رقم من انتقلوا) وليس آخر رقم', newKid.child_no === oldNo && newKid.child_no < Math.max(...server.participants.filter((x) => x.mosque_id === MB).map((x) => x.child_no)), `${newKid.child_no} vs freed ${oldNo}`)
   check('وحضوره سُجّل بعد الطفل (بدون رفض)', !!newKid && server.attendance.some((a) => a.participant_id === newKid.id && a.attendance_date === TODAY && a.status === 'valid'))
   check('الطابور المحلي فاضي والشريط "كل شيء متزامن"', (await idbCount('newChildren')) === 0 && (await page.locator('header').innerText()).includes('كل شيء متزامن'))
 
@@ -530,7 +666,7 @@ async function login(page, email) {
   await page.goto(BASE + '/attendance'); await page.waitForSelector('button:has-text("أحمد")')
   check('Recorder: لا يوجد منتقي تاريخ (اليوم فقط)', (await page.locator('input[type=date]').count()) === 0)
   check('Recorder (مسجد واحد): لا شرائح مساجد، يرى اسم مسجده فقط', (await page.locator('main').innerText()).includes('مسجد النور') && (await page.locator('button:has-text("كل المساجد")').count()) === 0)
-  check('Recorder: يرى أطفال مسجد النور فقط (5) ولا يرى أطفال الرحمة', (await page.locator('main li').count()) === 5 && (await page.locator('main').innerText()).includes('أحمد') && !(await page.locator('main').innerText()).includes('إبراهيم'))
+  check('Recorder: يرى أطفال مسجد النور فقط (5 + المنقول) ولا يرى أطفال الرحمة', (await page.locator('main li').count()) === 7 && (await page.locator('main').innerText()).includes('أحمد') && !(await page.locator('main').innerText()).includes('إبراهيم'))
   await page.goto(BASE + '/participants'); await page.waitForSelector('main ul li')
   check('Recorder: لا زر إضافة ولا استيراد', (await page.locator('button:has-text("استيراد")').count()) === 0 && (await page.locator('button:has-text("+ إضافة")').count()) === 0)
   await page.screenshot({ path: `${SHOTS}/12-recorder.png` })

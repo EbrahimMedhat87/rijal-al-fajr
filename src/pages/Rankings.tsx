@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import PeriodPicker from '../components/PeriodPicker'
-import { Badge, Banner, Card, Chip, Empty, PageTitle, Spinner } from '../components/ui'
+import { Badge, Banner, Card, Chip, ChildNo, Empty, PageTitle, Spinner } from '../components/ui'
 import { useAppData } from '../lib/app-data'
 import { fetchCounts, fetchMosqueRanking } from '../lib/data'
 import { errorToArabic } from '../lib/errors'
@@ -47,7 +47,7 @@ export default function Rankings() {
             if (!alive) return
             setRows(
               rankParticipants(
-                data.map((d) => ({ participantId: d.participant_id, name: d.name, active: d.active, days: d.days, mosqueName: d.mosque_name }))
+                data.map((d) => ({ participantId: d.participant_id, name: d.name, active: d.active, days: d.days, childNo: d.child_no, mosqueName: d.mosque_name }))
               )
             )
           })
@@ -128,7 +128,10 @@ export default function Rankings() {
                   >
                     <RankBubble rank={r.rank} />
                     <span className="min-w-0 flex-1">
-                      <span className="block truncate font-semibold text-brand-900">{r.name}</span>
+                      <span className="flex items-center gap-2">
+                        <ChildNo n={r.childNo} />
+                        <span className="truncate font-semibold text-brand-900">{r.name}</span>
+                      </span>
                       <span className="block truncate text-xs text-brand-700">
                         {r.mosqueName}
                         {!r.active && ' · موقوف'}

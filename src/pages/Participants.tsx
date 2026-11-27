@@ -1,17 +1,17 @@
-import { useMemo, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useState, type FormEvent, useDeferredValue } from 'react'
 import { Link } from 'react-router-dom'
 import ImportParticipants from '../components/ImportParticipants'
 import MosqueSwitcher from '../components/MosqueSwitcher'
-import { Badge, Banner, Button, Card, Chip, Empty, Field, Modal, PageTitle, inputClass } from '../components/ui'
+import { Badge, Banner, Button, Card, Chip, ChildNo, Empty, Field, Modal, PageTitle, inputClass } from '../components/ui'
 import { useAppData } from '../lib/app-data'
 import { canManage, useSession } from '../lib/auth'
-import { addParticipant } from '../lib/data'
+import { addParticipant, findSimilarChildren, transferChild, type SimilarChild } from '../lib/data'
 import { findSimilarElsewhere } from '../lib/import'
 import { useAllParticipants } from '../lib/participants'
 import { useSync } from '../lib/sync-context'
 import { errorToArabic } from '../lib/errors'
 import { useOnline } from '../lib/hooks'
-import { matchesQuery, normalizeArabic } from '../lib/text'
+import { compareByNumberQuery, isNumericQuery, matchesQuery, normalizeArabic } from '../lib/text'
 import { useToast } from '../lib/toast'
 
 export default function Participants() {
@@ -23,6 +23,8 @@ export default function Participants() {
   const { engine, userId, syncNow } = useSync()
   const all = useAllParticipants()
   const [query, setQuery] = useState('')
+  // البحث فوري (على الجهاز، بدون زر): نتائج كل حرف تظهر مباشرة، و useDeferredValue يمنع تقطيع الكتابة لو القائمة كبيرة
+  const dq = useDeferredValue(query)
   const [showInactive, setShowInactive] = useState(false)
   const [adding, setAdding] = useState(false)
   const [importing, setImporting] = useState(false)
@@ -31,6 +33,8 @@ export default function Participants() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [confirmDup, setConfirmDup] = useState(false)
+  const [serverSimilar, setServerSimilar] = useState<SimilarChild[] | null>(null)
+  const [transferring, setTransferring] = useState<SimilarChild | null>(null)
 
   const activeMosques = mosques.filter((m) => m.active)
   const addMosque = mosqueId || (selectedMosque !== 'all' ? selectedMosque : activeMosques[0]?.id ?? '')
@@ -39,13 +43,54 @@ export default function Participants() {
   const list = (all ?? [])
     .filter((p) => selectedMosque === 'all' || p.mosque_id === selectedMosque)
     .filter((p) => (showInactive ? true : p.active))
-    .filter((p) => matchesQuery(p.name, query))
-    .sort((a, b) => a.name.localeCompare(b.name, 'ar'))
+    .filter((p) => matchesQuery(p.name, dq, p.child_no))
+    .sort((a, b) => (isNumericQuery(dq) ? compareByNumberQuery(dq, a, b) : 0) || a.name.localeCompare(b.name, 'ar'))
 
   const dupe = all?.find((p) => p.mosque_id === addMosque && normalizeArabic(p.name) === normalizeArabic(name))
 
   // تنبيه فوري: نفس أول 3 كلمات عند طفل في مسجد آخر
-  const similar = useMemo(() => (all && name.trim() && addMosque ? findSimilarElsewhere(name, all, addMosque).slice(0, 3) : []), [all, name, addMosque])
+  // (المشرف لا يرى أطفال المساجد الأخرى، فنسأل الخادم؛ ولو لا إنترنت نكتفي بما على الجهاز)
+  const localSimilar = useMemo<SimilarChild[]>(
+    () =>
+      all && name.trim() && addMosque
+        ? findSimilarElsewhere(name, all, addMosque)
+            .slice(0, 3)
+            .map((s) => ({ idx: 0, participant_id: s.id, name: s.name, child_no: s.child_no ?? null, mosque_id: s.mosque_id, mosque_name: mosqueName(s.mosque_id) }))
+        : [],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [all, name, addMosque]
+  )
+  useEffect(() => {
+    setServerSimilar(null)
+    setTransferring(null)
+    if (!adding || !online || !addMosque || normalizeArabic(name).split(' ').filter(Boolean).length < 2) return
+    let alive = true
+    const t = setTimeout(() => {
+      findSimilarChildren([name], addMosque)
+        .then((r) => alive && setServerSimilar(r))
+        .catch(() => undefined)
+    }, 350)
+    return () => {
+      alive = false
+      clearTimeout(t)
+    }
+  }, [adding, online, name, addMosque])
+  const similar = serverSimilar ?? localSimilar
+
+  const doTransfer = async (s: SimilarChild) => {
+    setBusy(true)
+    setError(null)
+    try {
+      await transferChild(s.participant_id, addMosque)
+      toast('success', `تم نقل ${s.name} إلى ${mosqueName(addMosque)} — سجل حضوره محفوظ`)
+      close()
+    } catch (err) {
+      setError(errorToArabic(err))
+      setTransferring(null)
+    } finally {
+      setBusy(false)
+    }
+  }
 
   const close = () => {
     setAdding(false)
@@ -103,7 +148,7 @@ export default function Participants() {
       {manage && !online && <div className="mb-3"><Banner tone="blue">أنت بدون إنترنت: تقدر تضيف أطفالًا جددًا (يُرسَلون لاحقًا)، أما التعديل والاستيراد فيحتاجان اتصالًا.</Banner></div>}
 
       <div className="mb-3 space-y-2">
-        <input type="search" className={inputClass} placeholder="ابحث بالاسم…" value={query} onChange={(e) => setQuery(e.target.value)} aria-label="بحث" />
+        <input type="search" className={inputClass} placeholder="ابحث بالاسم أو الرقم…" value={query} onChange={(e) => setQuery(e.target.value)} aria-label="بحث" enterKeyHint="done" onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()} />
         {manage && (
           <div className="flex gap-2">
             <Chip active={!showInactive} onClick={() => setShowInactive(false)}>النشطون</Chip>
@@ -129,7 +174,10 @@ export default function Participants() {
               ) : (
                 <Link to={`/participants/${p.id}`} className="flex min-h-14 items-center justify-between rounded-2xl border border-brand-200 bg-white px-4 py-3 active:bg-brand-50">
                   <span className="min-w-0">
-                    <span className="block truncate text-lg font-semibold text-brand-900">{p.name}</span>
+                    <span className="flex items-center gap-2">
+                      <ChildNo n={p.child_no} />
+                      <span className="truncate text-lg font-semibold text-brand-900">{p.name}</span>
+                    </span>
                     {showMosque && <span className="block text-xs text-brand-700">{mosqueName(p.mosque_id)}</span>}
                   </span>
                   {!p.active && <Badge tone="gray">موقوف</Badge>}
@@ -162,12 +210,28 @@ export default function Participants() {
             {similar.length > 0 && (
               <Banner tone="gold">
                 <b>تنبيه: الاسم ده غالبًا مكرر.</b> يوجد طفل بنفس بداية الاسم في مسجد آخر:
-                <ul className="mt-1 space-y-0.5">
+                <ul className="mt-2 space-y-2">
                   {similar.map((s) => (
-                    <li key={s.id}>• {s.name} — <b>{mosqueName(s.mosque_id)}</b></li>
+                    <li key={s.participant_id} className="rounded-lg bg-white/70 p-2">
+                      <div>
+                        {s.child_no != null && <b dir="ltr">#{s.child_no} </b>}
+                        {s.name} — <b>{s.mosque_name}</b>
+                      </div>
+                      {transferring?.participant_id === s.participant_id ? (
+                        <div className="mt-2 space-y-2">
+                          <div className="text-xs">هننقله من {s.mosque_name} إلى {mosqueName(addMosque)}، وسجل حضوره كله بيفضل معاه (وبياخد رقم جديد هنا).</div>
+                          <div className="flex gap-2">
+                            <Button variant="secondary" onClick={() => setTransferring(null)} disabled={busy}>رجوع</Button>
+                            <Button variant="gold" block disabled={busy} onClick={() => void doTransfer(s)}>{busy ? 'جارٍ النقل…' : 'تأكيد النقل'}</Button>
+                          </div>
+                        </div>
+                      ) : (
+                        online && <Button variant="gold" className="mt-2 min-h-10 py-1.5 text-sm" onClick={() => setTransferring(s)}>نقله هنا بدل تكراره</Button>
+                      )}
+                    </li>
                   ))}
                 </ul>
-                <div className="mt-1 text-xs">لو هو نفس الطفل فلا تضفه مرة ثانية (انقله من صفحته). ولو طفل آخر أكمل الإضافة.</div>
+                <div className="mt-2 text-xs">لو هو نفس الطفل انقله (ما تضفوش مرة ثانية). ولو طفل آخر أكمل الإضافة.</div>
               </Banner>
             )}
             {confirmDup && dupe && (

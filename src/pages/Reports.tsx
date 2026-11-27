@@ -34,10 +34,10 @@ export default function Reports() {
     setError(null)
     try {
       const counts = await fetchCounts(range, mosqueId)
-      const ranked = rankParticipants(counts.map((c) => ({ participantId: c.participant_id, name: c.name, active: c.active, days: c.days, mosqueName: c.mosque_name })))
+      const ranked = rankParticipants(counts.map((c) => ({ participantId: c.participant_id, name: c.name, active: c.active, days: c.days, childNo: c.child_no, mosqueName: c.mosque_name })))
       const csv = toCsv(
-        ['الترتيب', 'الاسم', 'المسجد', 'عدد أيام الحضور', 'الحالة', 'من', 'إلى'],
-        ranked.map((r) => [r.rank ?? '', r.name, r.mosqueName ?? '', r.days, r.active ? 'نشط' : 'موقوف', range.from, range.to])
+        ['الترتيب', 'الرقم', 'الاسم', 'المسجد', 'عدد أيام الحضور', 'الحالة', 'من', 'إلى'],
+        ranked.map((r) => [r.rank ?? '', r.childNo ?? '', r.name, r.mosqueName ?? '', r.days, r.active ? 'نشط' : 'موقوف', range.from, range.to])
       )
       downloadCsv(`rijal-al-fajr-summary-${slug}.csv`, csv)
     } catch (e) {
@@ -56,9 +56,10 @@ export default function Reports() {
       const pn = new Map(parts.map((p) => [p.id, p]))
       const scopedRows = rows.filter((r) => !mosqueId || pn.get(r.participant_id)?.mosque_id === mosqueId)
       const csv = toCsv(
-        ['التاريخ', 'الاسم', 'المسجد', 'الحالة', 'سجّله', `وقت التسجيل (${tz})`, 'سبب الإبطال'],
+        ['التاريخ', 'الرقم', 'الاسم', 'المسجد', 'الحالة', 'سجّله', `وقت التسجيل (${tz})`, 'سبب الإبطال'],
         scopedRows.map((r) => [
           r.attendance_date,
+          pn.get(r.participant_id)?.child_no ?? '',
           pn.get(r.participant_id)?.name ?? r.participant_id,
           mosqueName(pn.get(r.participant_id)?.mosque_id ?? ''),
           r.status === 'valid' ? 'صالح' : 'مُبطَل',
