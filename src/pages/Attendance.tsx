@@ -7,10 +7,10 @@ import { refreshAttendanceDate, undoAttendance } from '../lib/data'
 import { db } from '../lib/db'
 import { formatArabicDate } from '../lib/dates'
 import { arabicError, errorToArabic } from '../lib/errors'
-import { useLive, useOnline } from '../lib/hooks'
+import { useLive, useOnline, useSortMode } from '../lib/hooks'
 import { useAllParticipants, type LocalParticipant } from '../lib/participants'
 import { useSync } from '../lib/sync-context'
-import { compareByNumberQuery, isNumericQuery, matchesQuery } from '../lib/text'
+import { compareChildren, matchesQuery } from '../lib/text'
 import { useToast } from '../lib/toast'
 import type { QueuedOp } from '../lib/types'
 
@@ -35,6 +35,7 @@ export default function Attendance() {
   // البحث فوري (على الجهاز، بدون زر): نتائج كل حرف تظهر مباشرة، و useDeferredValue يمنع تقطيع الكتابة لو القائمة كبيرة
   const dq = useDeferredValue(query)
   const [filter, setFilter] = useState<Filter>('all')
+  const [sortMode, setSortMode] = useSortMode()
   const [undoing, setUndoing] = useState<LocalParticipant | null>(null)
   const [undoBusy, setUndoBusy] = useState(false)
 
@@ -74,8 +75,8 @@ export default function Attendance() {
         const done = (info.get(p.id)?.state ?? 'none') !== 'none' && info.get(p.id)?.state !== 'failed'
         return filter === 'all' ? true : filter === 'done' ? done : !done
       })
-      .sort((a, b) => (isNumericQuery(dq) ? compareByNumberQuery(dq, a, b) : 0) || a.name.localeCompare(b.name, 'ar'))
-  }, [scoped, info, dq, filter])
+      .sort((a, b) => compareChildren(a, b, sortMode, dq, mosqueName))
+  }, [scoped, info, dq, filter, sortMode, mosqueName])
 
   const activeCount = scoped?.filter((p) => p.active).length ?? 0
   const presentCount = useMemo(() => {
@@ -190,6 +191,9 @@ export default function Attendance() {
           <Chip active={filter === 'all'} onClick={() => setFilter('all')}>الكل</Chip>
           <Chip active={filter === 'todo'} onClick={() => setFilter('todo')}>لم يُسجَّل</Chip>
           <Chip active={filter === 'done'} onClick={() => setFilter('done')}>حاضر</Chip>
+          <span className="mx-1 w-px self-stretch bg-brand-200" aria-hidden />
+          <Chip active={sortMode === 'no'} onClick={() => setSortMode('no')}>بالرقم</Chip>
+          <Chip active={sortMode === 'name'} onClick={() => setSortMode('name')}>بالاسم</Chip>
         </div>
       </div>
 

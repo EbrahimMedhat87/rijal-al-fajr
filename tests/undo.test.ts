@@ -2,7 +2,7 @@ import 'fake-indexeddb/auto'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { AppDb, attendanceKey, clearLocalAttendance, replaceAttendanceCache } from '../src/lib/db'
 import { SyncEngine, type AttendanceBackend } from '../src/lib/sync'
-import { compareByNumberQuery, isNumericQuery, matchesQuery } from '../src/lib/text'
+import { compareByNumberQuery, compareChildren, isNumericQuery, matchesQuery } from '../src/lib/text'
 import type { QueuedOp } from '../src/lib/types'
 
 let n = 0
@@ -113,5 +113,30 @@ describe('تنظيف "الحضور الوهمي" المحلي', () => {
     expect((await db.attendanceCache.toArray()).map((c) => c.participantId)).toEqual(['p2'])
     expect((await db.queue.toArray()).map((o) => o.opId)).toEqual(['b'])
     expect((await engine.enqueue('u', 'p1', D)).kind).toBe('queued') // بعد الإلغاء يمكن إعادة التسجيل
+  })
+})
+
+describe('ترتيب القائمة', () => {
+  const kids = [
+    { name: 'أحمد سيد', child_no: 113, mosque_id: 'A' },
+    { name: 'سمير صابر', child_no: 1, mosque_id: 'A' },
+    { name: 'عبد الحميد', child_no: 2, mosque_id: 'A' },
+    { name: 'آدم محمد', child_no: 31, mosque_id: 'A' },
+    { name: 'طفل جديد', child_no: null, mosque_id: 'A' },
+    { name: 'بلال', child_no: 1, mosque_id: 'B' }
+  ]
+  const mname = (id: string) => (id === 'A' ? 'مسجد أ' : 'مسجد ب')
+  const sorted = (mode: 'no' | 'name', q = '') => [...kids].sort((a, b) => compareChildren(a, b, mode, q, mname)).map((k) => k.name)
+
+  it('بالرقم: داخل كل مسجد تصاعديًا، والطفل بلا رقم في آخر مسجده', () => {
+    expect(sorted('no')).toEqual(['سمير صابر', 'عبد الحميد', 'آدم محمد', 'أحمد سيد', 'طفل جديد', 'بلال'])
+  })
+  it('بالاسم: أبجديًا', () => {
+    expect(sorted('name')[0]).toBe('آدم محمد')
+  })
+  it('بحث برقم: المطابق تمامًا أولًا حتى لو الترتيب بالرقم', () => {
+    expect(sorted('no', '1')[0]).toBeDefined()
+    const r = [{ name: 'x', child_no: 10, mosque_id: 'A' }, { name: 'y', child_no: 1, mosque_id: 'A' }].sort((a, b) => compareChildren(a, b, 'no', '1', mname))
+    expect(r.map((k) => k.child_no)).toEqual([1, 10])
   })
 })

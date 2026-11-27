@@ -10,8 +10,8 @@ import { findSimilarElsewhere } from '../lib/import'
 import { useAllParticipants } from '../lib/participants'
 import { useSync } from '../lib/sync-context'
 import { errorToArabic } from '../lib/errors'
-import { useOnline } from '../lib/hooks'
-import { compareByNumberQuery, isNumericQuery, matchesQuery, normalizeArabic } from '../lib/text'
+import { useOnline, useSortMode } from '../lib/hooks'
+import { compareChildren, matchesQuery, normalizeArabic } from '../lib/text'
 import { useToast } from '../lib/toast'
 
 export default function Participants() {
@@ -26,6 +26,7 @@ export default function Participants() {
   // البحث فوري (على الجهاز، بدون زر): نتائج كل حرف تظهر مباشرة، و useDeferredValue يمنع تقطيع الكتابة لو القائمة كبيرة
   const dq = useDeferredValue(query)
   const [showInactive, setShowInactive] = useState(false)
+  const [sortMode, setSortMode] = useSortMode()
   const [adding, setAdding] = useState(false)
   const [importing, setImporting] = useState(false)
   const [name, setName] = useState('')
@@ -44,7 +45,7 @@ export default function Participants() {
     .filter((p) => selectedMosque === 'all' || p.mosque_id === selectedMosque)
     .filter((p) => (showInactive ? true : p.active))
     .filter((p) => matchesQuery(p.name, dq, p.child_no))
-    .sort((a, b) => (isNumericQuery(dq) ? compareByNumberQuery(dq, a, b) : 0) || a.name.localeCompare(b.name, 'ar'))
+    .sort((a, b) => compareChildren(a, b, sortMode, dq, mosqueName))
 
   const dupe = all?.find((p) => p.mosque_id === addMosque && normalizeArabic(p.name) === normalizeArabic(name))
 
@@ -149,10 +150,14 @@ export default function Participants() {
 
       <div className="mb-3 space-y-2">
         <input type="search" className={inputClass} placeholder="ابحث بالاسم أو الرقم…" value={query} onChange={(e) => setQuery(e.target.value)} aria-label="بحث" enterKeyHint="done" onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()} />
-        {manage && (
-          <div className="flex gap-2">
+        {(
+          <div className="flex flex-wrap gap-2">
+            <Chip active={sortMode === 'no'} onClick={() => setSortMode('no')}>بالرقم</Chip>
+            <Chip active={sortMode === 'name'} onClick={() => setSortMode('name')}>بالاسم</Chip>
+            {manage && <>
             <Chip active={!showInactive} onClick={() => setShowInactive(false)}>النشطون</Chip>
             <Chip active={showInactive} onClick={() => setShowInactive(true)}>الكل (مع الموقوفين)</Chip>
+            </>}
           </div>
         )}
       </div>

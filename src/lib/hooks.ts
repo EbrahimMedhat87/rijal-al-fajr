@@ -29,3 +29,25 @@ export function useLive<T>(querier: () => T | Promise<T>, deps: unknown[] = []):
   }, deps)
   return value
 }
+
+/** ترتيب القوائم (بالرقم/بالاسم) — يُحفظ على الجهاز لو أمكن (التخزين قد لا يعمل في بعض المتصفحات فنتجاهل الخطأ) */
+export function useSortMode(): ['no' | 'name', (m: 'no' | 'name') => void] {
+  const [mode, setMode] = useState<'no' | 'name'>(() => {
+    try {
+      return localStorage.getItem('rf-sort') === 'name' ? 'name' : 'no'
+    } catch {
+      return 'no'
+    }
+  })
+  return [
+    mode,
+    (m) => {
+      setMode(m)
+      try {
+        localStorage.setItem('rf-sort', m)
+      } catch {
+        /* تجاهل */
+      }
+    }
+  ]
+}

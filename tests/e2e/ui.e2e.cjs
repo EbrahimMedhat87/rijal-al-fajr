@@ -357,6 +357,15 @@ async function login(page, email) {
   check('رقم غير موجود: لا نتائج', (await page.locator('main li').count()) === 0)
   await page.fill('input[type=search]', ''); await sleep(200)
 
+  // ---- 3ب2) ترتيب القائمة: افتراضيًا بالرقم، وزر "بالاسم" يبدّله
+  const rowNames = () => page.locator('main li').evaluateAll((els) => els.map((e) => e.innerText.replace(/\s+/g, ' ').trim().split(' ')[0] + '|' + e.innerText.split('\n').find((x) => /[ء-ي]/.test(x))))
+  const nums = await page.locator('main li [data-testid=child-no]').allInnerTexts()
+  check('الترتيب الافتراضي بالرقم: داخل كل مسجد تصاعدي (الرحمة 1 ثم النور 1..5)', nums.map((x) => x.trim()).join(',') === '1,1,2,3,4,5', nums.join(','))
+  await page.click('button:has-text("بالاسم")'); await sleep(300)
+  const nums2 = await page.locator('main li [data-testid=child-no]').allInnerTexts()
+  check('زر "بالاسم" يرتّب أبجديًا (الأرقام تتبعثر وده المتوقع)', nums2.map((x) => x.trim()).join(',') !== '1,1,2,3,4,5')
+  await page.click('button:has-text("بالرقم")'); await sleep(300)
+
   // ---- 3ج) شريط البحث الثابت: لا يترك فراغًا فوقه يمرّ منه المحتوى (مشكلة iOS: padding الحاوية يُحسب في موضع sticky)
   await page.setViewportSize({ width: 390, height: 430 })
   await sleep(300)
