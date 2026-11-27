@@ -21,7 +21,7 @@ export default function ParticipantDetail() {
   const toast = useToast()
   const manage = canManage(session.profile.role)
 
-  const participant = useLive(() => db.participants.get(id), [id])
+  const participant = useLive(async () => (await db.participants.get(id)) ?? null, [id])
   const local = useLive(() => db.queue.where('participantId').equals(id).and((o) => o.status !== 'synced').toArray(), [id])
 
   const [totals, setTotals] = useState<{ month: number; quarter: number; all: number } | null>(null)
@@ -70,7 +70,7 @@ export default function ParticipantDetail() {
   if (!participant) {
     return (
       <Empty>
-        الطفل غير موجود على هذا الجهاز. <Link className="font-semibold underline" to="/participants">العودة للقائمة</Link>
+        الطفل غير متاح لحسابك (ليس من أطفال مسجدك) أو غير موجود على هذا الجهاز. <Link className="font-semibold underline" to="/participants">العودة للقائمة</Link>
       </Empty>
     )
   }

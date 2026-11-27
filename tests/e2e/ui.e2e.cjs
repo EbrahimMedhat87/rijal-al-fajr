@@ -26,7 +26,8 @@ const TODAY = todayCairo()
 // ----------------------------- خادم وهمي -----------------------------
 const USERS = {
   'owner@x.test': { id: '11111111-1111-1111-1111-111111111111', name: 'المالك', role: 'owner' },
-  'rec@x.test': { id: '33333333-3333-3333-3333-333333333333', name: 'مسجل 1', role: 'recorder' }
+  'rec@x.test': { id: '33333333-3333-3333-3333-333333333333', name: 'مسجل 1', role: 'recorder' },
+  'adm@x.test': { id: '77777777-7777-7777-7777-777777777777', name: 'مشرف النور', role: 'admin' }
 }
 const NAMES = ['أحمد', 'محمد', 'يوسف', 'عمر', 'خالد', 'إبراهيم']
 const MA = 'bbbbbbbb-0000-0000-0000-00000000000a' // مسجد النور
@@ -34,7 +35,7 @@ const MB = 'bbbbbbbb-0000-0000-0000-00000000000b' // مسجد الرحمة
 const MOSQUES = [{ id: MA, name: 'مسجد النور', active: true }, { id: MB, name: 'مسجد الرحمة', active: true }]
 const server = {
   participants: NAMES.map((n, i) => ({ id: `aaaaaaaa-0000-0000-0000-00000000000${i + 1}`, name: n, active: true, mosque_id: i < 5 ? MA : MB })),
-  userMosques: { [USERS['rec@x.test'].id]: [MA] },
+  userMosques: { [USERS['rec@x.test'].id]: [MA], [USERS['adm@x.test'].id]: [MA] },
   pending: [{ user_id: '44444444-4444-4444-4444-444444444444', email: 'new@x.test', full_name: 'إداري جديد', requested_mosque: 'مسجد الرحمة', created_at: new Date().toISOString() }],
   signups: [],
   upserts: [],
@@ -679,6 +680,24 @@ async function login(page, email) {
   await page.goto(BASE + '/participants'); await page.waitForSelector('main ul li')
   check('Recorder: لا زر إضافة ولا استيراد', (await page.locator('button:has-text("استيراد")').count()) === 0 && (await page.locator('button:has-text("+ إضافة")').count()) === 0)
   await page.screenshot({ path: `${SHOTS}/12-recorder.png` })
+
+  // ---- 10ب) مشرف مسجد النور: الترتيب يعرض كل الأطفال، لكن لا يفتح إلا ملف أطفال مسجده
+  await page.click('button[aria-label="القائمة"]')
+  page.once('dialog', (d) => d.accept())
+  await page.click('button:has-text("تسجيل الخروج")')
+  await page.waitForURL(/login/)
+  await login(page, 'adm@x.test'); await sleep(1000)
+  await page.goto(BASE + '/rankings'); await page.waitForSelector('ol li'); await sleep(2500)
+  const otherKid = server.participants.find((x) => x.mosque_id === MB)
+  const ownKidName = 'أحمد'
+  check('مشرف: الترتيب يعرض أطفال المسجدين', (await page.locator('ol li:has-text("' + otherKid.name + '")').count()) === 1 && (await page.locator('ol li:has-text("' + ownKidName + '")').count()) >= 1)
+  check('مشرف: طفل من مسجد آخر في الترتيب = صف للعرض فقط (بلا رابط)', (await page.locator('ol li:has-text("' + otherKid.name + '") a').count()) === 0)
+  check('مشرف: طفل من مسجده رابط يفتح ملفه', (await page.locator('ol li:has-text("' + ownKidName + '") a').count()) >= 1)
+  await page.click('ol li:has-text("' + ownKidName + '") a >> nth=0'); await sleep(800)
+  check('مشرف: فتح ملف طفل من مسجده يعمل', /\/participants\//.test(page.url()) && (await page.locator('h1').innerText()).includes(ownKidName))
+  await page.goto(BASE + '/participants/' + otherKid.id); await sleep(2500)
+  check('مشرف: فتح ملف طفل مسجد آخر مباشرة يعرض "غير متاح" بدل تحميل لا ينتهي', (await page.locator('main').innerText()).includes('غير متاح') && (await page.locator('[role=status], .animate-spin').count()) === 0, await page.locator('main').innerText())
+  await page.screenshot({ path: `${SHOTS}/12b-admin-other-mosque.png` })
 
   // ---- 11) لا أخطاء JS غير متوقعة
   const bad = errors.filter((e) => !/Failed to load resource|net::ERR|Failed to fetch|NetworkError|ERR_INTERNET_DISCONNECTED/i.test(e))

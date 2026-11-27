@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import PeriodPicker from '../components/PeriodPicker'
 import { Badge, Banner, Card, Chip, ChildNo, Empty, PageTitle, Spinner } from '../components/ui'
 import { useAppData } from '../lib/app-data'
+import { useAllParticipants } from '../lib/participants'
 import { fetchCounts, fetchMosqueRanking } from '../lib/data'
 import { errorToArabic } from '../lib/errors'
 import { useOnline } from '../lib/hooks'
@@ -15,6 +16,10 @@ type Tab = 'children' | 'mosques'
 export default function Rankings() {
   const { today, campaign, allMosques } = useAppData()
   const online = useOnline()
+  // أطفال مسجدك فقط يُفتح ملفهم؛ باقي الترتيب للعرض فقط (المشرف لا يملك صلاحية على أطفال مساجد أخرى)
+  const mine = useAllParticipants()
+  const mineIds = useMemo(() => new Set((mine ?? []).map((p) => p.id)), [mine])
+  const canOpen = (id: string) => mine === undefined || mineIds.has(id)
   const [tab, setTab] = useState<Tab>('children')
   const [mosqueFilter, setMosqueFilter] = useState<string>('all')
   const [period, setPeriod] = useState<PeriodState>(() => defaultPeriod(today, 'month'))
@@ -120,9 +125,9 @@ export default function Rankings() {
             <ol className="space-y-2">
               {rows.map((r) => (
                 <li key={r.participantId}>
-                  <Link
-                    to={`/participants/${r.participantId}`}
-                    className={`flex min-h-14 items-center gap-3 rounded-2xl border px-4 py-3 active:bg-brand-50 ${
+                  <RowShell
+                    to={canOpen(r.participantId) ? `/participants/${r.participantId}` : null}
+                    className={`flex min-h-14 items-center gap-3 rounded-2xl border px-4 py-3 ${
                       r.rank === 1 ? 'border-gold-400 bg-gold-100' : 'border-brand-100 bg-white'
                     }`}
                   >
@@ -141,7 +146,7 @@ export default function Rankings() {
                       <span className="block text-xl font-extrabold text-brand-900">{r.days}</span>
                       <span className="block text-[11px] text-brand-700">يوم</span>
                     </span>
-                  </Link>
+                  </RowShell>
                 </li>
               ))}
             </ol>
@@ -193,4 +198,10 @@ function RankBubble({ rank }: { rank: number | null }) {
       {rank ?? '—'}
     </span>
   )
+}
+
+/** صف الترتيب: رابط لملف الطفل لو متاح، وإلا صف للعرض فقط (بدون صفحة تحميل لا تنتهي) */
+function RowShell({ to, className, children }: { to: string | null; className: string; children: ReactNode }) {
+  if (to) return <Link to={to} className={`${className} active:bg-brand-50`}>{children}</Link>
+  return <div className={className}>{children}</div>
 }
