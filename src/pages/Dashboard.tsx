@@ -3,6 +3,7 @@ import { Badge, Banner, Button, Card, PageTitle } from '../components/ui'
 import { useAppData } from '../lib/app-data'
 import { canManage, useSession } from '../lib/auth'
 import { db } from '../lib/db'
+import { readAllParticipants } from '../lib/participants'
 import { formatArabicDate } from '../lib/dates'
 import { arabicError } from '../lib/errors'
 import { useOnline, useLive } from '../lib/hooks'
@@ -17,21 +18,26 @@ export default function Dashboard() {
   const toast = useToast()
 
   const stats = useLive(async () => {
-    const [cache, ops, activeCount, total] = await Promise.all([
+    const [cache, ops, everyone] = await Promise.all([
       db.attendanceCache.where('date').equals(today).toArray(),
       db.queue.where('date').equals(today).toArray(),
-      db.participants.filter((p) => p.active).count(),
-      db.participants.count()
+      readAllParticipants(userId)
     ])
+    const activeCount = everyone.filter((p) => p.active).length
+    const total = everyone.length
     const present = new Set(cache.map((c) => c.participantId))
     ops.filter((o) => o.status !== 'failed').forEach((o) => present.add(o.participantId))
     return { present: present.size, activeCount, total }
-  }, [today])
+  }, [today, userId])
 
   const failed = useLive(async () => {
     const ops = await db.queue.where('status').equals('failed').and((o) => o.userId === userId).toArray()
-    const names = new Map((await db.participants.toArray()).map((p) => [p.id, p.name]))
-    return ops.map((o) => ({ ...o, name: names.get(o.participantId) ?? 'طفل' }))
+    const kids = (await db.newChildren.toArray()).filter((c) => c.userId === userId)
+    const names = new Map([...(await db.participants.toArray()), ...kids].map((p) => [p.id, p.name]))
+    return {
+      ops: ops.map((o) => ({ ...o, name: names.get(o.participantId) ?? 'طفل' })),
+      kids: kids.filter((c) => c.status === 'failed')
+    }
   }, [userId])
 
   const noList = stats && stats.total === 0
@@ -113,10 +119,40 @@ export default function Dashboard() {
 
       {failedCount > 0 && failed && (
         <Card className="border-red-200">
-          <h2 className="mb-1 font-bold text-red-800">سجلات رفضها الخادم ({failedCount})</h2>
+          <h2 className="mb-1 font-bold text-red-800">عناصر رفضها الخادم ({failedCount})</h2>
           <p className="mb-3 text-xs text-brand-700">لم تُحتسب هذه السجلات. أعد المحاولة أو احذفها بعد التأكد.</p>
           <ul className="space-y-3">
-            {failed.map((o) => (
+            {failed.kids.map((c) => (
+              <li key={c.id} className="rounded-xl bg-red-50 p-3">
+                <div className="font-semibold text-brand-900">إضافة الطفل: {c.name}</div>
+                <div className="mt-0.5 text-sm text-red-800">{arabicError(c.errorCode)}</div>
+                <div className="mt-2 flex gap-2">
+                  <Button
+                    variant="secondary"
+                    className="flex-1"
+                    onClick={async () => {
+                      await engine.retryFailedChild(c.id)
+                      void syncNow()
+                    }}
+                  >
+                    إعادة المحاولة
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    className="flex-1 text-red-700"
+                    onClick={async () => {
+                      if (window.confirm(`حذف الطفل ${c.name} (وأي حضور مسجَّل له) من هذا الجهاز نهائيًا؟`)) {
+                        await engine.discardFailedChild(c.id)
+                        toast('info', 'تم الحذف')
+                      }
+                    }}
+                  >
+                    حذف
+                  </Button>
+                </div>
+              </li>
+            ))}
+            {failed.ops.map((o) => (
               <li key={o.opId} className="rounded-xl bg-red-50 p-3">
                 <div className="font-semibold text-brand-900">
                   {o.name} · {o.date}

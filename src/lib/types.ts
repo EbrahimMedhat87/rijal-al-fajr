@@ -45,6 +45,18 @@ export interface QueuedOp {
   updatedAt: number // ms
 }
 
+/** طفل أُضيف على هذا الجهاز (ربما بدون إنترنت) وينتظر الإرسال للخادم. id هو معرّف الطفل النهائي. */
+export interface QueuedChild {
+  id: string
+  userId: string
+  name: string
+  mosque_id: string
+  status: 'pending' | 'syncing' | 'failed'
+  attempts: number
+  errorCode?: string
+  updatedAt: number
+}
+
 /** حضور معروف من الخادم لتاريخ معيّن (كاش للقراءة بدون إنترنت) */
 export interface CachedAttendance {
   key: string // `${date}|${participantId}`

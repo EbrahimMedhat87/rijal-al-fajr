@@ -8,10 +8,11 @@ import { db } from '../lib/db'
 import { formatArabicDate } from '../lib/dates'
 import { arabicError } from '../lib/errors'
 import { useLive, useOnline } from '../lib/hooks'
+import { useAllParticipants, type LocalParticipant } from '../lib/participants'
 import { useSync } from '../lib/sync-context'
 import { matchesQuery } from '../lib/text'
 import { useToast } from '../lib/toast'
-import type { Participant, QueuedOp } from '../lib/types'
+import type { QueuedOp } from '../lib/types'
 
 type RowState = 'none' | 'synced' | 'pending' | 'failed'
 interface RowInfo {
@@ -33,7 +34,7 @@ export default function Attendance() {
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<Filter>('all')
 
-  const participants = useLive(() => db.participants.toArray())
+  const participants = useAllParticipants()
   const scoped = useMemo(
     () => participants?.filter((p) => selectedMosque === 'all' || p.mosque_id === selectedMosque),
     [participants, selectedMosque]
@@ -78,7 +79,7 @@ export default function Attendance() {
     return [...info.entries()].filter(([id, v]) => ids.has(id) && (v.state === 'synced' || v.state === 'pending')).length
   }, [info, scoped])
 
-  const mark = async (p: Participant) => {
+  const mark = async (p: LocalParticipant) => {
     const cur = info.get(p.id)?.state ?? 'none'
     if (cur === 'synced' || cur === 'pending') return
     const r = await engine.enqueue(userId, p.id, date)
@@ -169,7 +170,7 @@ export default function Attendance() {
   )
 }
 
-function Row({ p, row, mosque, onMark }: { p: Participant; row: RowInfo; mosque: string; onMark: () => void }) {
+function Row({ p, row, mosque, onMark }: { p: LocalParticipant; row: RowInfo; mosque: string; onMark: () => void }) {
   const disabled = row.state === 'synced' || row.state === 'pending'
   const style = {
     none: 'border-brand-200 bg-white active:bg-brand-50',
@@ -191,6 +192,7 @@ function Row({ p, row, mosque, onMark }: { p: Participant; row: RowInfo; mosque:
           <span className="block truncate text-lg font-semibold text-brand-900">{p.name}</span>
           {mosque && <span className="block text-xs text-brand-700">{mosque}</span>}
           {!p.active && <span className="text-xs text-brand-700">موقوف</span>}
+          {p.pending && <span className="block text-xs text-gold-700">طفل جديد — لم يُرسَل للخادم بعد</span>}
           {row.state === 'synced' && row.op?.serverResult === 'already_recorded' && (
             <span className="block text-xs text-brand-700">سُجِّل مسبقًا من جهاز آخر</span>
           )}

@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { useAppData } from './app-data'
 import { useAuth } from './auth'
 import { createSupabaseBackend } from './backend'
-import { refreshAttendanceDate } from './data'
+import { refreshAttendanceDate, refreshParticipants } from './data'
 import { db } from './db'
 import { arabicError } from './errors'
 import { useLive } from './hooks'
@@ -37,11 +37,13 @@ export function SyncProvider({ children }: { children: ReactNode }) {
 
   const counts = useLive(async () => {
     const all = await db.queue.toArray()
+    const kids = await db.newChildren.toArray()
     const mine = all.filter((o) => o.userId === userId)
+    const myKids = kids.filter((c) => c.userId === userId)
     return {
-      pending: mine.filter((o) => o.status === 'pending' || o.status === 'syncing').length,
-      failed: mine.filter((o) => o.status === 'failed').length,
-      others: all.filter((o) => o.userId !== userId && (o.status === 'pending' || o.status === 'syncing')).length
+      pending: mine.filter((o) => o.status === 'pending' || o.status === 'syncing').length + myKids.filter((c) => c.status !== 'failed').length,
+      failed: mine.filter((o) => o.status === 'failed').length + myKids.filter((c) => c.status === 'failed').length,
+      others: all.filter((o) => o.userId !== userId && (o.status === 'pending' || o.status === 'syncing')).length + kids.filter((c) => c.userId !== userId && c.status !== 'failed').length
     }
   }, [userId])
 
@@ -68,6 +70,11 @@ export function SyncProvider({ children }: { children: ReactNode }) {
       if (s.alreadyRecorded > 0) {
         toast('info', s.alreadyRecorded === 1 ? 'تم تسجيل حضور طفل مسبقًا من جهاز آخر — لا تكرار' : `تم تسجيل حضور ${s.alreadyRecorded} أطفال مسبقًا من أجهزة أخرى — لا تكرار`)
       }
+      if (s.childrenCreated > 0) {
+        toast('success', s.childrenCreated === 1 ? 'تم إرسال الطفل الجديد للخادم' : `تم إرسال ${s.childrenCreated} أطفال جدد للخادم`)
+        refreshParticipants().catch(() => {})
+      }
+      if (s.childrenFailed > 0) toast('error', `${s.childrenFailed} طفل لم يقبله الخادم — راجع قائمة "فشل" في الصفحة الرئيسية`)
       if (s.failed > 0) toast('error', `${s.failed} سجل لم يُقبَل من الخادم — راجع قائمة "فشل" في الصفحة الرئيسية`)
       if (s.sent > 0) refreshAttendanceDate(todayRef.current).catch(() => {})
     } finally {
@@ -86,7 +93,7 @@ export function SyncProvider({ children }: { children: ReactNode }) {
     window.addEventListener('online', onOnline)
     document.addEventListener('visibilitychange', onVisible)
     const id = setInterval(async () => {
-      if (navigator.onLine && (await db.queue.where('status').equals('pending').count()) > 0) void syncNow()
+      if (navigator.onLine && ((await db.queue.where('status').equals('pending').count()) > 0 || (await db.newChildren.where('status').equals('pending').count()) > 0)) void syncNow()
     }, 20_000)
     return () => {
       window.removeEventListener('online', onOnline)

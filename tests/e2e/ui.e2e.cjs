@@ -69,8 +69,16 @@ function counts(from, to, mosqueId = null) {
 
 function handleRpc(name, body, uid) {
   const u = userById(uid)
+  if (name === 'add_participant') {
+    server.calls.addParticipant = (server.calls.addParticipant || 0) + 1
+    const ex = server.participants.find((x) => x.id === body.p_id)
+    if (ex) return { status: 200, json: { status: 'already_synced', id: ex.id } }
+    server.participants.push({ id: body.p_id, name: body.p_name.trim(), active: true, mosque_id: body.p_mosque_id })
+    return { status: 200, json: { status: 'created', id: body.p_id } }
+  }
   if (name === 'record_attendance') {
     server.calls.record++
+    if (!server.participants.find((x) => x.id === body.p_participant_id)) return { status: 400, json: { message: 'ERR_PARTICIPANT_NOT_FOUND', code: 'P0002' } }
     const dup = server.attendance.find((a) => a.client_op_id === body.p_client_op_id)
     if (dup) return { status: 200, json: { status: 'already_synced', attendance_id: dup.id } }
     if (body.p_date > TODAY) return { status: 400, json: { message: 'ERR_DATE_IN_FUTURE', code: 'P0001' } }
@@ -462,6 +470,47 @@ async function login(page, email) {
   check('القبول: الدور مشرف + ربط بمسجد الرحمة فقط', server.upserts.length === 1 && server.upserts[0].p_role === 'admin' && JSON.stringify(server.userMosques['44444444-4444-4444-4444-444444444444']) === JSON.stringify([MB]), JSON.stringify([server.upserts, server.userMosques]))
   const afterTxt = await page.locator('main').innerText()
   check('بعد القبول: يختفي من الطلبات ويظهر في المنظمين', (await page.locator('h2:has-text("طلبات تسجيل جديدة")').count()) === 0 && afterTxt.includes('new@x.test'), JSON.stringify({ hasPendingTitle: afterTxt.includes('طلبات تسجيل جديدة'), hasEmail: afterTxt.includes('new@x.test'), pending: server.pending.length }))
+
+  // ---- 9و) تنبيه الأسماء المشابهة (أول 3 كلمات) في مسجد آخر
+  await page.goto(BASE + '/participants'); await page.waitForSelector('text=+ إضافة'); await sleep(600)
+  await page.click('button:has-text("مسجد النور")'); await sleep(200)
+  await page.click('button:has-text("+ إضافة")'); await page.waitForSelector('[role=dialog]')
+  const nameInput = page.locator('[role=dialog] input').first()
+  await nameInput.fill('علي حسن محمود الشريف'); await sleep(200)
+  const dtxt = await page.locator('[role=dialog]').innerText()
+  check('تنبيه الاسم المشابه: يذكر "غالبًا مكرر" واسم الطفل والمسجد الآخر', dtxt.includes('غالبًا مكرر') && dtxt.includes('علي حسن محمود') && dtxt.includes('مسجد الرحمة'), dtxt)
+  check('الزر يصبح "إضافة رغم ذلك" (لا منع، فقط تنبيه)', (await page.locator('[role=dialog] button[type=submit]').innerText()).includes('رغم ذلك'))
+  await page.screenshot({ path: `${SHOTS}/10c-similar-warning.png` })
+  await nameInput.fill('سامي رضا هاني'); await sleep(200)
+  check('اسم مختلف: لا تنبيه', !(await page.locator('[role=dialog]').innerText()).includes('غالبًا مكرر'))
+  await nameInput.fill('اسلام مدحت'); await sleep(100)
+  await page.click('button[aria-label="إغلاق"]')
+
+  // ---- 9ز) إضافة طفل بدون إنترنت ثم مزامنته (مع حضوره)
+  await page.click('button:has-text("مسجد الرحمة")'); await sleep(300)
+  await page.reload(); await page.waitForSelector('text=+ إضافة'); await sleep(1500) // كاش الـ PWA جاهز
+  const partsBefore = server.participants.length
+  await context.setOffline(true); await sleep(300)
+  check('أوفلاين: زر "+ إضافة" ما زال مفعّلًا', !(await page.locator('button:has-text("+ إضافة")').isDisabled()))
+  await page.click('button:has-text("+ إضافة")'); await page.waitForSelector('[role=dialog]')
+  await page.locator('[role=dialog] input').first().fill('طفل أوفلاين تجربة')
+  await page.click('[role=dialog] button[type=submit]')
+  await page.waitForSelector('text=على هذا الجهاز', { timeout: 5000 })
+  await sleep(500)
+  check('أوفلاين: الطفل محفوظ محليًا ولم يصل للخادم', (await idbCount('newChildren')) === 1 && server.participants.length === partsBefore)
+  check('أوفلاين: يظهر في القائمة بشارة "بانتظار الإرسال"', (await page.locator('main li:has-text("طفل أوفلاين تجربة")').innerText()).includes('بانتظار الإرسال'))
+  await page.screenshot({ path: `${SHOTS}/10d-offline-child.png` })
+  await page.click('nav a:has-text("التحضير")'); await page.waitForSelector('input[type=search]'); await sleep(400)
+  await page.click('button:has-text("طفل أوفلاين تجربة")'); await sleep(500)
+  check('أوفلاين: يمكن تحضير الطفل الجديد فورًا', (await page.locator('li:has-text("طفل أوفلاين تجربة")').innerText()).includes('محفوظ على الجهاز'))
+  check('الشريط يعرض عنصرين معلّقين (الطفل + حضوره)', (await page.locator('header').innerText()).includes('2 بانتظار المزامنة'), await page.locator('header').innerText())
+  await context.setOffline(false)
+  await page.evaluate(() => window.dispatchEvent(new Event('online')))
+  await sleep(4000)
+  const newKid = server.participants.find((x) => x.name === 'طفل أوفلاين تجربة')
+  check('بعد عودة الاتصال: الطفل أُنشئ في الخادم في المسجد الصحيح (مرة واحدة)', !!newKid && newKid.mosque_id === MB && server.participants.filter((x) => x.name === 'طفل أوفلاين تجربة').length === 1 && server.calls.addParticipant === 1)
+  check('وحضوره سُجّل بعد الطفل (بدون رفض)', !!newKid && server.attendance.some((a) => a.participant_id === newKid.id && a.attendance_date === TODAY && a.status === 'valid'))
+  check('الطابور المحلي فاضي والشريط "كل شيء متزامن"', (await idbCount('newChildren')) === 0 && (await page.locator('header').innerText()).includes('كل شيء متزامن'))
 
   // ---- 10) تسجيل الخروج ثم مسجِّل (Recorder)
   await page.click('button[aria-label="القائمة"]')

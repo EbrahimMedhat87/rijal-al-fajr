@@ -469,4 +469,30 @@ select public.owner_reject_signup(t.uid('new2@x.test'));
 select t.expect((select count(*) from public.owner_list_pending_users() where email like 'new%') = 1, 'الرفض يحذف الطلب');
 select t.logout();
 
+-- ---------------------------------------------------------------------------
+-- 14) إضافة طفل بمعرّف من الجهاز (أوفلاين) — add_participant
+-- ---------------------------------------------------------------------------
+select t.login(t.uid('admin@x.test'));
+select t.expect((select public.add_participant('aaaaaaaa-0000-4000-8000-000000000001', '  طفل أوفلاين ', (select ma from mq))->>'status') = 'created', 'إضافة طفل بمعرّف من الجهاز');
+select t.expect((select count(*) from public.participants where id = 'aaaaaaaa-0000-4000-8000-000000000001' and name = 'طفل أوفلاين') = 1, 'الاسم يُنظَّف والطفل موجود');
+select t.expect((select public.add_participant('aaaaaaaa-0000-4000-8000-000000000001', 'طفل أوفلاين', (select ma from mq))->>'status') = 'already_synced', 'إعادة الإرسال لا تكرّر');
+select t.expect((select count(*) from public.participants where name = 'طفل أوفلاين') = 1, 'طفل واحد فقط بعد إعادة الإرسال');
+select t.expect_err($$select public.add_participant('aaaaaaaa-0000-4000-8000-000000000001', 'اسم مختلف', (select ma from mq))$$, 'ERR_INVALID_INPUT', 'نفس المعرّف باسم مختلف مرفوض');
+select t.expect_err($$select public.add_participant(gen_random_uuid(), 'x', (select mb from mq))$$, 'ERR_MOSQUE_NOT_ALLOWED', 'لا إضافة لمسجد غير مربوط');
+select t.expect_err($$select public.add_participant(gen_random_uuid(), '   ', (select ma from mq))$$, 'ERR_INVALID_INPUT', 'اسم فارغ مرفوض');
+select t.expect_err($$select public.add_participant(gen_random_uuid(), 'x', gen_random_uuid())$$, 'ERR_MOSQUE_NOT_FOUND', 'مسجد غير موجود مرفوض');
+select t.expect((select created_by from public.participants where id = 'aaaaaaaa-0000-4000-8000-000000000001') = t.uid('admin@x.test'), 'created_by = المستخدم الحالي');
+select t.logout();
+select t.login(t.uid('rec1@x.test'));
+select t.expect_err($$select public.add_participant(gen_random_uuid(), 'x', (select ma from mq))$$, 'ERR_NOT_AUTHORIZED', 'المسجِّل لا يضيف أطفالًا');
+select t.logout();
+select t.login(t.uid('owner@x.test'));
+update public.mosques set active = false where id = (select mb from mq);
+select t.expect_err($$select public.add_participant(gen_random_uuid(), 'x', (select mb from mq))$$, 'ERR_MOSQUE_NOT_ALLOWED', 'لا إضافة لمسجد موقوف');
+update public.mosques set active = true where id = (select mb from mq);
+select t.logout();
+select t.login_anon();
+select t.expect_err($$select public.add_participant(gen_random_uuid(), 'x', (select ma from mq))$$, 'permission denied', 'anon لا ينفذ الدالة');
+select t.logout();
+
 \echo '=== كل اختبارات قاعدة البيانات نجحت ==='

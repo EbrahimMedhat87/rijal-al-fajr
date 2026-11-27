@@ -1,5 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { BackendError, type AttendanceBackend, type RecordInput, type RecordResult } from './sync'
+import { BackendError, type AttendanceBackend, type CreateParticipantInput, type RecordInput, type RecordResult } from './sync'
 
 interface PgError {
   message?: string
@@ -40,6 +40,18 @@ export function createSupabaseBackend(client: SupabaseClient): AttendanceBackend
       const data = res.data as { status: RecordResult['status']; attendance_id?: string } | null
       if (!data?.status) throw new BackendError('NETWORK', true, 'empty response')
       return { status: data.status, attendanceId: data.attendance_id }
+    },
+
+    async createParticipant(input: CreateParticipantInput): Promise<void> {
+      let res
+      try {
+        res = await client.rpc('add_participant', { p_id: input.id, p_name: input.name, p_mosque_id: input.mosqueId })
+      } catch (e) {
+        throw new BackendError('NETWORK', true, String(e))
+      }
+      if (res.error) throw classifyError(res.error, res.status)
+      const data = res.data as { status?: string } | null
+      if (!data?.status) throw new BackendError('NETWORK', true, 'empty response')
     }
   }
 }

@@ -1,5 +1,5 @@
 import Dexie, { type Table } from 'dexie'
-import type { CachedAttendance, MetaRow, Mosque, Participant, QueuedOp } from './types'
+import type { CachedAttendance, MetaRow, Mosque, Participant, QueuedChild, QueuedOp } from './types'
 
 export class AppDb extends Dexie {
   participants!: Table<Participant, string>
@@ -7,6 +7,7 @@ export class AppDb extends Dexie {
   attendanceCache!: Table<CachedAttendance, string>
   meta!: Table<MetaRow, string>
   mosques!: Table<Mosque, string>
+  newChildren!: Table<QueuedChild, string>
 
   constructor(name = 'rijal-al-fajr') {
     super(name)
@@ -23,6 +24,15 @@ export class AppDb extends Dexie {
       attendanceCache: 'key, date',
       meta: 'key',
       mosques: 'id'
+    })
+    // v3: أطفال أُضيفوا على الجهاز وينتظرون الإرسال
+    this.version(3).stores({
+      participants: 'id, name, active, mosque_id',
+      queue: 'opId, status, userId, updatedAt, date, [participantId+date]',
+      attendanceCache: 'key, date',
+      meta: 'key',
+      mosques: 'id',
+      newChildren: 'id, status, userId, mosque_id'
     })
   }
 }

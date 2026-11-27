@@ -17,9 +17,27 @@ class FakeServer {
   failNext: BackendError | null = null
   loseResponseNext = false
   delayMs = 0
+  strict = false // true: حضور طفل غير موجود في الخادم يُرفض نهائيًا (كالإنتاج)
+  children = new Map<string, { name: string; mosqueId: string }>()
+  childCalls = 0
+  rejectChildren: string | null = null // كود رفض نهائي لإنشاء الأطفال
+  loseChildResponseNext = false
 
   backend(): AttendanceBackend {
-    return { record: (i) => this.handle(i) }
+    return { record: (i) => this.handle(i), createParticipant: (i) => this.createChild(i) }
+  }
+
+  private async createChild(i: { id: string; name: string; mosqueId: string }): Promise<void> {
+    this.childCalls++
+    if (!this.online) throw new BackendError('NETWORK', true)
+    if (this.rejectChildren) throw new BackendError(this.rejectChildren, false)
+    const ex = this.children.get(i.id)
+    if (ex && (ex.name !== i.name || ex.mosqueId !== i.mosqueId)) throw new BackendError('ERR_INVALID_INPUT', false)
+    this.children.set(i.id, { name: i.name, mosqueId: i.mosqueId })
+    if (this.loseChildResponseNext) {
+      this.loseChildResponseNext = false
+      throw new BackendError('NETWORK', true)
+    }
   }
 
   private async handle(i: RecordInput): Promise<RecordResult> {
@@ -31,6 +49,7 @@ class FakeServer {
       this.failNext = null
       throw e
     }
+    if (this.strict && !this.children.has(i.participantId)) throw new BackendError('ERR_PARTICIPANT_NOT_FOUND', false)
     const key = `${i.participantId}|${i.date}`
     let result: RecordResult
     if (this.byOp.has(i.opId)) result = { status: 'already_synced' }
@@ -288,7 +307,7 @@ describe('الرفض النهائي والفشل', () => {
 
   it('خطأ غير متوقع (ليس BackendError) يُعامَل كانقطاع مؤقت ولا يضيّع السجل', async () => {
     await engine.enqueue(U1, 'p1', D)
-    const boom: AttendanceBackend = { record: async () => { throw new Error('boom') } }
+    const boom: AttendanceBackend = { record: async () => { throw new Error('boom') }, createParticipant: async () => { throw new Error('boom') } }
     const e2 = new SyncEngine(db, boom)
     const s = await e2.syncAll(U1)
     expect(s.stoppedByTransientError).toBe(true)
@@ -330,5 +349,114 @@ describe('التنظيف', () => {
     const left = await db.queue.toArray()
     expect(left.map((o) => o.participantId).sort()).toEqual(['new-pending', 'new-synced', 'still-pending'].sort())
     expect(left.filter((o) => o.status === 'pending').length).toBeGreaterThanOrEqual(1)
+  })
+})
+
+describe('إضافة طفل بدون إنترنت', () => {
+  const M = 'mosque-1'
+
+  it('enqueueChild يحفظ الطفل محليًا فورًا بدون أي اتصال', async () => {
+    server.online = false
+    const c = await engine.enqueueChild(U1, '  علي حسن ', M)
+    expect(server.childCalls).toBe(0)
+    expect(c).toMatchObject({ name: 'علي حسن', mosque_id: M, status: 'pending' })
+    expect(await db.newChildren.count()).toBe(1)
+  })
+
+  it('بعد عودة الاتصال: الطفل يُنشأ ثم يُحذف من الطابور ويظهر في participants', async () => {
+    server.online = false
+    const c = await engine.enqueueChild(U1, 'علي حسن', M)
+    expect((await engine.syncAll(U1)).stoppedByTransientError).toBe(true)
+    expect(await db.newChildren.count()).toBe(1) // لم يضِع شيء
+    server.online = true
+    const s = await engine.syncAll(U1)
+    expect(s.childrenCreated).toBe(1)
+    expect(server.children.get(c.id)).toEqual({ name: 'علي حسن', mosqueId: M })
+    expect(await db.newChildren.count()).toBe(0)
+    expect(await db.participants.get(c.id)).toMatchObject({ name: 'علي حسن', mosque_id: M, active: true })
+  })
+
+  it('حضور طفل جديد أوفلاين: الطفل يُرسَل أولًا ثم حضوره (لا رفض)', async () => {
+    server.strict = true
+    server.online = false
+    const c = await engine.enqueueChild(U1, 'علي حسن', M)
+    expect((await engine.enqueue(U1, c.id, D)).kind).toBe('queued')
+    server.online = true
+    const s = await engine.syncAll(U1)
+    expect(s).toMatchObject({ childrenCreated: 1, created: 1, failed: 0, remaining: 0 })
+    expect(server.validCount()).toBe(1)
+  })
+
+  it('ضياع الرد بعد إنشاء الطفل: إعادة الإرسال بنفس المعرّف لا تُكرّره', async () => {
+    const c = await engine.enqueueChild(U1, 'علي حسن', M)
+    server.loseChildResponseNext = true
+    expect((await engine.syncAll(U1)).stoppedByTransientError).toBe(true)
+    expect(server.children.size).toBe(1) // الخادم أنشأه فعلًا
+    expect((await db.newChildren.get(c.id))?.status).toBe('pending')
+    const s = await engine.syncAll(U1)
+    expect(s.childrenCreated).toBe(1)
+    expect(server.children.size).toBe(1) // ما زال واحدًا
+  })
+
+  it('انقطاع الاتصال أثناء إرسال الأطفال: يتوقف ولا يرسل الحضور قبل الطفل', async () => {
+    server.strict = true
+    const c = await engine.enqueueChild(U1, 'علي', M)
+    await engine.enqueue(U1, c.id, D)
+    server.online = false
+    const s = await engine.syncAll(U1)
+    expect(s).toMatchObject({ stoppedByTransientError: true, remaining: 2 })
+    expect((await db.queue.toArray())[0].status).toBe('pending')
+  })
+
+  it('رفض نهائي للطفل: يصير failed وحضوره يصير failed بسببه، وإعادة المحاولة تُعيدهما', async () => {
+    server.strict = true
+    server.rejectChildren = 'ERR_MOSQUE_NOT_ALLOWED'
+    const c = await engine.enqueueChild(U1, 'علي', M)
+    await engine.enqueue(U1, c.id, D)
+    const s = await engine.syncAll(U1)
+    expect(s.childrenFailed).toBe(1)
+    expect((await db.newChildren.get(c.id))?.status).toBe('failed')
+    const op = (await db.queue.toArray())[0]
+    expect(op).toMatchObject({ status: 'failed', errorCode: 'ERR_CHILD_NOT_SAVED' })
+
+    server.rejectChildren = null
+    await engine.retryFailedChild(c.id)
+    expect((await db.queue.toArray())[0].status).toBe('pending')
+    const s2 = await engine.syncAll(U1)
+    expect(s2).toMatchObject({ childrenCreated: 1, created: 1, failed: 0 })
+  })
+
+  it('discardFailedChild يحذف الفاشل وحضوره فقط ولا يمس الطفل الناجح', async () => {
+    const ok = await engine.enqueueChild(U1, 'سليم', M)
+    await engine.syncAll(U1)
+    server.rejectChildren = 'ERR_MOSQUE_NOT_ALLOWED'
+    const bad = await engine.enqueueChild(U1, 'فاشل', M)
+    await engine.enqueue(U1, bad.id, D)
+    await engine.syncAll(U1)
+    expect(await engine.discardFailedChild(ok.id)).toBe(false)
+    expect(await engine.discardFailedChild(bad.id)).toBe(true)
+    expect(await db.queue.count()).toBe(0)
+    expect(await db.newChildren.count()).toBe(0)
+  })
+
+  it('طفل pending لا يُحذف بـ discardFailedChild', async () => {
+    const c = await engine.enqueueChild(U1, 'علي', M)
+    expect(await engine.discardFailedChild(c.id)).toBe(false)
+    expect(await db.newChildren.count()).toBe(1)
+  })
+
+  it('syncing معلّق (إغلاق مفاجئ) يرجع pending ويُرسَل بأمان', async () => {
+    const c = await engine.enqueueChild(U1, 'علي', M)
+    await db.newChildren.update(c.id, { status: 'syncing' })
+    const s = await engine.syncAll(U1)
+    expect(s.childrenCreated).toBe(1)
+  })
+
+  it('لا تُرسَل أطفال مستخدم آخر', async () => {
+    await engine.enqueueChild(U2, 'علي', M)
+    const s = await engine.syncAll(U1)
+    expect(s.childrenCreated).toBe(0)
+    expect(server.children.size).toBe(0)
+    expect(await db.newChildren.count()).toBe(1)
   })
 })

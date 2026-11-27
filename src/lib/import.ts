@@ -51,13 +51,42 @@ export function parseNameList(text: string): string[] {
     .filter((n): n is string => n !== null)
 }
 
-export type ImportStatus = 'new' | 'exists' | 'existsElsewhere' | 'dupInList'
+export type ImportStatus = 'new' | 'exists' | 'existsElsewhere' | 'similarElsewhere' | 'dupInList'
 
 export interface ImportItem {
   name: string
   status: ImportStatus
-  /** اسم المسجد الآخر إن وُجد الاسم عند مسجد آخر */
+  /** اسم المسجد الآخر إن وُجد الاسم (أو ما يشبهه) عند مسجد آخر */
   otherMosque?: string
+  /** الاسم الكامل للطفل المشابه في المسجد الآخر */
+  similarTo?: string
+}
+
+const tokens = (s: string): string[] => normalizeArabic(s).split(' ').filter(Boolean)
+
+export interface SimilarMatch {
+  name: string
+  mosque_id: string
+}
+
+/**
+ * أطفال في مساجد أخرى "غالبًا هم نفسه": أول 3 كلمات متطابقة (بعد تطبيع الهمزات والتاء المربوطة…).
+ * مثال: "إبراهيم مدحت محمد" ≈ "ابراهيم مدحت محمد رفاعي".
+ * الاسم الأقصر من 3 كلمات يُقارَن بالكامل فقط (حتى لا يُطابق "أحمد محمد" كل من يبدأ به).
+ * الاسم من كلمة واحدة لا يُقارَن أبدًا.
+ */
+export function findSimilarElsewhere<T extends SimilarMatch>(name: string, existing: T[], mosqueId: string): T[] {
+  const t = tokens(name)
+  if (t.length < 2) return []
+  const k = Math.min(3, t.length)
+  const head = t.slice(0, k).join(' ')
+  return existing.filter((c) => {
+    if (c.mosque_id === mosqueId) return false
+    const ct = tokens(c.name)
+    if (ct.length < k) return false
+    if (t.length < 3 && ct.length !== t.length) return false
+    return ct.slice(0, k).join(' ') === head
+  })
 }
 
 interface ExistingChild {
@@ -90,6 +119,8 @@ export function planImport(
     if (same.has(k)) return { name, status: 'exists' as const }
     const o = other.get(k)
     if (o) return { name, status: 'existsElsewhere' as const, otherMosque: mosqueName(o) }
+    const sim = findSimilarElsewhere(name, existing, mosqueId)[0]
+    if (sim) return { name, status: 'similarElsewhere' as const, otherMosque: mosqueName(sim.mosque_id), similarTo: sim.name }
     return { name, status: 'new' as const }
   })
 }

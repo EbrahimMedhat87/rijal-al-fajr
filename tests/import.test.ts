@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import sheetNormalized from './fixtures/bahari-sheet.txt?raw'
 import sheetRaw from './fixtures/bahari-sheet-raw.txt?raw'
-import { cleanNameLine, parseNameList, planImport } from '../src/lib/import'
+import { cleanNameLine, findSimilarElsewhere, parseNameList, planImport } from '../src/lib/import'
 
 describe('cleanNameLine', () => {
   it('يشيل الترقيم بأشكاله', () => {
@@ -60,5 +60,36 @@ describe('planImport', () => {
   })
   it('نفس الاسم في مسجد آخر لا يُعد تكرارًا داخل نفس المسجد', () => {
     expect(planImport(['أحمد محمد'], existing, 'b', mname)[0].status).toBe('existsElsewhere')
+  })
+})
+
+describe('findSimilarElsewhere (أول 3 كلمات)', () => {
+  const ex = [
+    { name: 'ابراهيم مدحت محمد رفاعي', mosque_id: 'b' },
+    { name: 'أحمد محمد', mosque_id: 'b' },
+    { name: 'محمود حسن علي سالم', mosque_id: 'a' }
+  ]
+  it('المثال المطلوب: إبراهيم مدحت محمد ≈ ابراهيم مدحت محمد رفاعي (الهمزة لا تفرق)', () => {
+    const r = findSimilarElsewhere('إبراهيم مدحت محمد', ex, 'a')
+    expect(r.map((x) => x.name)).toEqual(['ابراهيم مدحت محمد رفاعي'])
+  })
+  it('الاسم الأطول يُقارَن بأول 3 كلمات فقط', () => {
+    expect(findSimilarElsewhere('ابراهيم مدحت محمد عبد الله', ex, 'a')).toHaveLength(1)
+  })
+  it('أول كلمتين فقط متطابقتين لا تكفي', () => {
+    expect(findSimilarElsewhere('ابراهيم مدحت علي', ex, 'a')).toHaveLength(0)
+  })
+  it('لا يعتبر نفس المسجد', () => {
+    expect(findSimilarElsewhere('محمود حسن علي', ex, 'a')).toHaveLength(0)
+    expect(findSimilarElsewhere('محمود حسن علي', ex, 'b')).toHaveLength(1)
+  })
+  it('كلمة واحدة لا تُقارَن، وكلمتان تُقارَنان بالكامل فقط', () => {
+    expect(findSimilarElsewhere('أحمد', ex, 'a')).toHaveLength(0)
+    expect(findSimilarElsewhere('احمد محمد', ex, 'a')).toHaveLength(1)
+    expect(findSimilarElsewhere('احمد محمد علي', ex, 'a')).toHaveLength(0)
+  })
+  it('planImport يعلّم المشابه عند مسجد آخر ويذكر الاسم الكامل والمسجد', () => {
+    const r = planImport(['إبراهيم مدحت محمد'], ex, 'a', (id) => (id === 'b' ? 'مسجد ب' : 'مسجد أ'))
+    expect(r[0]).toMatchObject({ status: 'similarElsewhere', otherMosque: 'مسجد ب', similarTo: 'ابراهيم مدحت محمد رفاعي' })
   })
 })

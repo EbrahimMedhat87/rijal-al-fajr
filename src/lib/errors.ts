@@ -17,6 +17,7 @@ const MESSAGES: Record<string, string> = {
   ERR_INVALID_ROLE: 'دور غير صالح',
   ERR_INVALID_INPUT: 'بيانات غير صالحة',
   ERR_START_DATE_AFTER_ATTENDANCE: 'لا يمكن تأخير تاريخ البداية بعد سجلات حضور موجودة',
+  ERR_CHILD_NOT_SAVED: 'الطفل نفسه لم يُقبَل من الخادم، فلم يُرسَل حضوره',
   ERR_UNKNOWN: 'خطأ غير متوقع'
 }
 

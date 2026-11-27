@@ -2,16 +2,16 @@ import { useMemo, useRef, useState } from 'react'
 import { Badge, Banner, Button, Field, Modal, inputClass } from './ui'
 import { useAppData } from '../lib/app-data'
 import { addParticipantsBulk } from '../lib/data'
-import { db } from '../lib/db'
+import { useAllParticipants } from '../lib/participants'
 import { errorToArabic } from '../lib/errors'
 import { parseNameList, planImport, type ImportStatus } from '../lib/import'
-import { useLive } from '../lib/hooks'
 import { useToast } from '../lib/toast'
 
 const STATUS_LABEL: Record<ImportStatus, string> = {
   new: 'جديد',
   exists: 'موجود بالفعل',
   existsElsewhere: 'موجود في مسجد آخر',
+  similarElsewhere: 'يشبه طفلًا في مسجد آخر',
   dupInList: 'مكرر في القائمة'
 }
 
@@ -31,7 +31,7 @@ export default function ImportParticipants({ defaultMosqueId, onClose }: { defau
   const toast = useToast()
   const { mosques, mosqueName } = useAppData()
   const activeMosques = mosques.filter((m) => m.active)
-  const existing = useLive(() => db.participants.toArray())
+  const existing = useAllParticipants()
 
   const [mosqueId, setMosqueId] = useState(defaultMosqueId)
   const [text, setText] = useState('')
@@ -161,8 +161,9 @@ export default function ImportParticipants({ defaultMosqueId, onClose }: { defau
                   <span className="min-w-0 flex-1">
                     <span className="block text-brand-900">{it.name}</span>
                     {it.status === 'existsElsewhere' && <span className="block text-xs text-brand-700">عند {it.otherMosque}</span>}
+                    {it.status === 'similarElsewhere' && <span className="block text-xs text-brand-700">عند {it.otherMosque}: {it.similarTo}</span>}
                   </span>
-                  {it.status !== 'new' && <Badge tone={it.status === 'existsElsewhere' ? 'blue' : 'gold'}>{STATUS_LABEL[it.status]}</Badge>}
+                  {it.status !== 'new' && <Badge tone={it.status === 'existsElsewhere' || it.status === 'similarElsewhere' ? 'blue' : 'gold'}>{STATUS_LABEL[it.status]}</Badge>}
                 </label>
               </li>
             ))}
