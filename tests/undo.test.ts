@@ -140,3 +140,22 @@ describe('ترتيب القائمة', () => {
     expect(r.map((k) => k.child_no)).toEqual([1, 10])
   })
 })
+
+describe('حذف طفل: تنظيف الجهاز (purgeLocalParticipant)', () => {
+  it('يمسح الطفل وحضوره المخزَّن وعملياته المعلّقة، ولا يمس غيره', async () => {
+    const { purgeLocalParticipant } = await import('../src/lib/db')
+    await db.participants.bulkPut([
+      { id: 'p1', name: 'أ', active: true, mosque_id: 'm' },
+      { id: 'p2', name: 'ب', active: true, mosque_id: 'm' }
+    ])
+    await db.attendanceCache.put({ key: attendanceKey(D, 'p1'), date: D, participantId: 'p1' })
+    await db.attendanceCache.put({ key: attendanceKey(D, 'p2'), date: D, participantId: 'p2' })
+    await db.queue.add(op({ opId: 'a', participantId: 'p1', status: 'pending' }))
+    await db.queue.add(op({ opId: 'b', participantId: 'p1', status: 'failed' }))
+    await db.queue.add(op({ opId: 'c', participantId: 'p2', status: 'pending' }))
+    await purgeLocalParticipant(db, 'p1')
+    expect((await db.participants.toArray()).map((p) => p.id)).toEqual(['p2'])
+    expect((await db.attendanceCache.toArray()).map((c) => c.participantId)).toEqual(['p2'])
+    expect((await db.queue.toArray()).map((o) => o.opId)).toEqual(['c'])
+  })
+})

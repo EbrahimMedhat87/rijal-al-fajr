@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import { Badge, Banner, Button, Card, ChildNo, Empty, Field, Modal, Spinner, inputClass } from '../components/ui'
 import { useAppData } from '../lib/app-data'
 import { canManage, useSession } from '../lib/auth'
 import {
-  countValidDays, fetchParticipantHistory, fetchProfileNames, updateParticipant, voidAttendance,
+  countValidDays, deleteParticipant, fetchParticipantHistory, fetchProfileNames, updateParticipant, voidAttendance,
   type AttendanceRowDb
 } from '../lib/data'
 import { db } from '../lib/db'
@@ -19,6 +19,7 @@ export default function ParticipantDetail() {
   const { today, campaign, mosques, mosqueName } = useAppData()
   const online = useOnline()
   const toast = useToast()
+  const navigate = useNavigate()
   const manage = canManage(session.profile.role)
 
   const participant = useLive(async () => (await db.participants.get(id)) ?? null, [id])
@@ -36,6 +37,8 @@ export default function ParticipantDetail() {
   const [newMosque, setNewMosque] = useState('')
   const [newNo, setNewNo] = useState('')
   const [busy, setBusy] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const [confirmWord, setConfirmWord] = useState('')
   const [formError, setFormError] = useState<string | null>(null)
 
   const load = useCallback(async () => {
@@ -73,6 +76,22 @@ export default function ParticipantDetail() {
         الطفل غير متاح لحسابك (ليس من أطفال مسجدك) أو غير موجود على هذا الجهاز. <Link className="font-semibold underline" to="/participants">العودة للقائمة</Link>
       </Empty>
     )
+  }
+
+  const doDelete = async (e: FormEvent) => {
+    e.preventDefault()
+    if (confirmWord.trim() !== 'حذف' || !participant) return
+    setBusy(true)
+    setFormError(null)
+    try {
+      const r = await deleteParticipant(id)
+      toast('success', `تم حذف ${participant.name} نهائيًا مع ${r.attendanceDeleted} سجل حضور`)
+      navigate('/participants', { replace: true })
+    } catch (err) {
+      setFormError(errorToArabic(err))
+    } finally {
+      setBusy(false)
+    }
   }
 
   const doVoid = async (e: FormEvent) => {
@@ -212,6 +231,38 @@ export default function ParticipantDetail() {
         </>
       )}
 
+      {manage && (
+        <Card className="border-red-200 bg-red-50/50">
+          <h2 className="mb-1 font-bold text-red-800">منطقة الخطر</h2>
+          <p className="mb-3 text-sm text-brand-800">حذف الطفل نهائيًا مع كل سجل حضوره. لو عاوز بس توقفه عن الحضور استخدم "إيقاف" فوق.</p>
+          <Button variant="danger" block disabled={!online} onClick={() => { setDeleting(true); setConfirmWord(''); setFormError(null) }}>
+            🗑 حذف الطفل نهائيًا
+          </Button>
+          {!online && <p className="mt-2 text-xs text-brand-700">الحذف يحتاج اتصالًا بالإنترنت.</p>}
+        </Card>
+      )}
+
+      {deleting && (
+        <Modal title="حذف الطفل نهائيًا" onClose={() => !busy && setDeleting(false)}>
+          <form onSubmit={doDelete} className="space-y-4">
+            {formError && <Banner tone="red">{formError}</Banner>}
+            <Banner tone="red">
+              هيتحذف <b>{participant.name}</b> نهائيًا{history ? <> مع <b>{history.length >= limit ? `${history.length}+` : history.length}</b> سجل حضور</> : ' مع كل سجل حضوره'}، وهيختفي من الترتيب والتقارير. <b>مفيش رجوع من التطبيق.</b>
+            </Banner>
+            <p className="text-xs text-brand-700">بيانات الطفل وتواريخ حضوره بتتسجّل في سجل التدقيق عند المالك. رقمه ({participant.child_no ?? '—'}) هيفضل فاضي لأول طفل جديد في المسجد.</p>
+            <Field label='اكتب كلمة "حذف" للتأكيد'>
+              <input className={inputClass} value={confirmWord} onChange={(e) => setConfirmWord(e.target.value)} autoFocus autoComplete="off" aria-label="كلمة التأكيد" />
+            </Field>
+            <div className="flex gap-2">
+              <Button type="button" variant="secondary" disabled={busy} onClick={() => setDeleting(false)}>رجوع</Button>
+              <Button type="submit" variant="danger" block disabled={busy || confirmWord.trim() !== 'حذف' || !online}>
+                {busy ? 'جارٍ الحذف…' : 'احذف نهائيًا'}
+              </Button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
       {voiding && (
         <Modal title="إبطال سجل حضور" onClose={() => setVoiding(null)}>
           <form onSubmit={doVoid} className="space-y-4">
@@ -252,7 +303,7 @@ export default function ParticipantDetail() {
           </form>
         </Modal>
       )}
-      {formError && !voiding && !editing && <Banner tone="red">{arabicError(undefined, formError)}</Banner>}
+      {formError && !voiding && !editing && !deleting && <Banner tone="red">{arabicError(undefined, formError)}</Banner>}
     </div>
   )
 }

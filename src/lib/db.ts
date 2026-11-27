@@ -75,6 +75,15 @@ export async function replaceAttendanceCache(
   })
 }
 
+/** يمسح الطفل وكل أثر محلي له (حضور مخزَّن وعمليات الطابور) بعد حذفه من الخادم */
+export async function purgeLocalParticipant(d: AppDb, participantId: string): Promise<void> {
+  await d.transaction('rw', d.participants, d.attendanceCache, d.queue, async () => {
+    await d.participants.delete(participantId)
+    await d.attendanceCache.filter((c) => c.participantId === participantId).delete()
+    await d.queue.where('participantId').equals(participantId).delete()
+  })
+}
+
 /** يمسح أي أثر محلي لحضور طفل في تاريخ (بعد إلغائه من الخادم) */
 export async function clearLocalAttendance(d: AppDb, participantId: string, date: string): Promise<void> {
   await d.transaction('rw', d.attendanceCache, d.queue, async () => {

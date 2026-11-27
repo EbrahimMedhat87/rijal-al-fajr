@@ -626,4 +626,48 @@ select t.expect_err($$select * from public.find_similar_children(array['س ص'],
 select t.expect_err($$select public.transfer_child('bbbbbbbb-0000-4000-8000-0000000000b2', (select ma from mq))$$, 'permission denied', 'anon لا ينفذ transfer_child');
 select t.logout();
 
+-- ---------------------------------------------------------------------------
+-- 17) حذف طفل نهائيًا مع حضوره
+-- ---------------------------------------------------------------------------
+select t.login(t.uid('owner@x.test'));
+select public.add_participant('dddddddd-0000-4000-8000-0000000000d1', 'طفل للحذف أ', (select ma from mq));
+select public.add_participant('dddddddd-0000-4000-8000-0000000000d2', 'طفل للحذف ب', (select mb from mq));
+select public.add_participant('dddddddd-0000-4000-8000-0000000000d3', 'طفل للحذف ج', (select ma from mq));
+select public.record_attendance('00000000-0000-0000-0000-00000000e001', 'dddddddd-0000-4000-8000-0000000000d1', public.campaign_today(), now());
+select public.record_attendance('00000000-0000-0000-0000-00000000e002', 'dddddddd-0000-4000-8000-0000000000d1', public.campaign_today() - 1, now());
+select public.undo_attendance('dddddddd-0000-4000-8000-0000000000d1', public.campaign_today() - 1, 'اختبار');
+select public.record_attendance('00000000-0000-0000-0000-00000000e003', 'dddddddd-0000-4000-8000-0000000000d2', public.campaign_today(), now());
+select t.logout();
+
+select t.login(t.uid('rec1@x.test'));
+select t.expect_err($$select public.delete_participant('dddddddd-0000-4000-8000-0000000000d1')$$, 'ERR_NOT_AUTHORIZED', 'المسجِّل لا يحذف طفلًا');
+select t.logout();
+select t.login_anon();
+select t.expect_err($$select public.delete_participant('dddddddd-0000-4000-8000-0000000000d1')$$, 'permission denied', 'anon لا يحذف');
+select t.logout();
+
+select t.login(t.uid('admin@x.test'));
+select t.expect_err($$select public.delete_participant('dddddddd-0000-4000-8000-0000000000d2')$$, 'ERR_PARTICIPANT_NOT_FOUND', 'المشرف لا يحذف طفل مسجد آخر');
+select t.expect_err($$select public.delete_participant('dddddddd-0000-4000-8000-0000000000ff')$$, 'ERR_PARTICIPANT_NOT_FOUND', 'حذف طفل غير موجود');
+select t.expect((select public.delete_participant('dddddddd-0000-4000-8000-0000000000d1')->>'attendance_deleted') = '2', 'المشرف يحذف طفل مسجده مع سجلَّي حضوره (صالح + مُبطَل)');
+select t.logout();
+
+select t.expect((select count(*) from public.participants where id = 'dddddddd-0000-4000-8000-0000000000d1') = 0, 'الطفل اختفى');
+select t.expect((select count(*) from public.attendance where participant_id = 'dddddddd-0000-4000-8000-0000000000d1') = 0, 'كل سجلات حضوره اختفت');
+select t.expect((select details->>'attendance_valid' from public.audit_log where action = 'participant.delete' and entity_id = 'dddddddd-0000-4000-8000-0000000000d1') = '1', 'التدقيق يحفظ عدد الحضور الصالح');
+select t.expect((select details->>'attendance_void' from public.audit_log where action = 'participant.delete' and entity_id = 'dddddddd-0000-4000-8000-0000000000d1') = '1', 'التدقيق يحفظ عدد المُبطَل');
+select t.expect((select jsonb_array_length(details->'valid_dates') from public.audit_log where action = 'participant.delete' and entity_id = 'dddddddd-0000-4000-8000-0000000000d1') = 1 and (select details->>'name' from public.audit_log where action = 'participant.delete' and entity_id = 'dddddddd-0000-4000-8000-0000000000d1') = 'طفل للحذف أ', 'التدقيق يحفظ الاسم وتواريخ الحضور');
+select t.expect((select count(*) from public.attendance where participant_id = 'dddddddd-0000-4000-8000-0000000000d2') = 1, 'حضور طفل آخر لم يُمس');
+-- الحذف المباشر للحضور يبقى ممنوعًا (العلامة لا تبقى مفعّلة بعد الدالة)
+select t.expect_err($$delete from public.attendance where participant_id = 'dddddddd-0000-4000-8000-0000000000d2'$$, 'ERR_ATTENDANCE_NO_DELETE', 'الحذف المباشر للحضور ممنوع');
+select t.expect(coalesce(current_setting('app.allow_participant_delete', true), '') <> 'on', 'علامة السماح لا تبقى مفعّلة');
+
+select t.login(t.uid('owner@x.test'));
+select t.expect((select public.delete_participant('dddddddd-0000-4000-8000-0000000000d2')->>'status') = 'deleted', 'المالك يحذف طفلًا من أي مسجد');
+select t.expect((select public.delete_participant('dddddddd-0000-4000-8000-0000000000d3')->>'attendance_deleted') = '0', 'حذف طفل بلا حضور');
+-- رقمه يصير فراغًا ويأخذه الطفل الجديد
+select public.add_participant('dddddddd-0000-4000-8000-0000000000d4', 'طفل بعد الحذف', (select ma from mq));
+select t.expect((select count(distinct child_no) = count(*) from public.participants where mosque_id = (select ma from mq)), 'الأرقام فريدة بعد الحذف والإضافة');
+select t.logout();
+
 \echo '=== كل اختبارات قاعدة البيانات نجحت ==='

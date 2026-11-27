@@ -107,6 +107,16 @@ function handleRpc(name, body, uid) {
     row.status = 'void'; row.void_reason = body.p_reason || 'تسجيل بالخطأ'
     return { status: 200, json: { status: 'voided', attendance_id: row.id } }
   }
+  if (name === 'delete_participant') {
+    if (u.role === 'recorder') return { status: 400, json: { message: 'ERR_NOT_AUTHORIZED', code: '42501' } }
+    const c = server.participants.find((x) => x.id === body.p_participant_id)
+    if (!c || (u.role !== 'owner' && !(server.userMosques[uid] || []).includes(c.mosque_id))) return { status: 400, json: { message: 'ERR_PARTICIPANT_NOT_FOUND', code: 'P0002' } }
+    const mine = server.attendance.filter((a) => a.participant_id === c.id)
+    server.attendance = server.attendance.filter((a) => a.participant_id !== c.id)
+    server.participants = server.participants.filter((x) => x.id !== c.id)
+    server.calls.del = (server.calls.del || 0) + 1
+    return { status: 200, json: { status: 'deleted', attendance_deleted: mine.length } }
+  }
   if (name === 'find_similar_children') {
     server.calls.similar = (server.calls.similar || 0) + 1
     const out = []
@@ -698,6 +708,27 @@ async function login(page, email) {
   await page.goto(BASE + '/participants/' + otherKid.id); await sleep(2500)
   check('مشرف: فتح ملف طفل مسجد آخر مباشرة يعرض "غير متاح" بدل تحميل لا ينتهي', (await page.locator('main').innerText()).includes('غير متاح') && (await page.locator('[role=status], .animate-spin').count()) === 0, await page.locator('main').innerText())
   await page.screenshot({ path: `${SHOTS}/12b-admin-other-mosque.png` })
+
+  // ---- 10ج) حذف طفل نهائيًا (المشرف على طفل مسجده) مع كل حضوره
+  const delKid = server.participants.find((x) => x.name === 'خالد')
+  const delDays = server.attendance.filter((a) => a.participant_id === delKid.id).length
+  await page.goto(BASE + '/participants/' + delKid.id); await page.waitForSelector('h1:has-text("خالد")'); await sleep(1500)
+  check('زر "حذف الطفل نهائيًا" موجود للمشرف في منطقة الخطر', (await page.locator('button:has-text("حذف الطفل نهائيًا")').count()) === 1)
+  await page.click('button:has-text("حذف الطفل نهائيًا")'); await page.waitForSelector('[role=dialog]')
+  check('نافذة الحذف تحذّر وتذكر أنه نهائي', (await page.locator('[role=dialog]').innerText()).includes('مفيش رجوع'))
+  check('زر "احذف نهائيًا" معطّل قبل كتابة كلمة التأكيد', await page.locator('[role=dialog] button:has-text("احذف نهائيًا")').isDisabled())
+  await page.fill('[aria-label="كلمة التأكيد"]', 'حذ')
+  check('كلمة ناقصة لا تفعّل الحذف', await page.locator('[role=dialog] button:has-text("احذف نهائيًا")').isDisabled())
+  await page.screenshot({ path: `${SHOTS}/12c-delete-confirm.png` })
+  await page.click('[role=dialog] button:has-text("رجوع")'); await sleep(200)
+  check('الرجوع لا يحذف شيئًا', !server.calls.del && server.participants.some((x) => x.id === delKid.id))
+  await page.click('button:has-text("حذف الطفل نهائيًا")')
+  await page.fill('[aria-label="كلمة التأكيد"]', 'حذف')
+  await page.click('[role=dialog] button:has-text("احذف نهائيًا")'); await sleep(1500)
+  check('الحذف: الطفل وكل حضوره اختفوا من الخادم', server.calls.del === 1 && !server.participants.some((x) => x.id === delKid.id) && !server.attendance.some((a) => a.participant_id === delKid.id) && delDays >= 1)
+  check('بعد الحذف: يرجع لقائمة الأطفال والطفل غير موجود فيها', new URL(page.url()).pathname === '/participants' && (await page.locator('main li:has-text("خالد")').count()) === 0)
+  check('الحذف مسح الطفل محليًا من الجهاز', (await page.evaluate((id) => new Promise((res) => { const r = indexedDB.open('rijal-al-fajr'); r.onsuccess = () => { const q = r.result.transaction('participants').objectStore('participants').get(id); q.onsuccess = () => res(!!q.result) } }), delKid.id)) === false)
+  await page.screenshot({ path: `${SHOTS}/12d-after-delete.png` })
 
   // ---- 11) لا أخطاء JS غير متوقعة
   const bad = errors.filter((e) => !/Failed to load resource|net::ERR|Failed to fetch|NetworkError|ERR_INTERNET_DISCONNECTED/i.test(e))

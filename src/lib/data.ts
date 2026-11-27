@@ -1,6 +1,6 @@
 // طبقة الوصول للبيانات: كل استدعاءات Supabase هنا. الأخطاء ترفع Error ليتعامل معها المستدعي.
 import type { PostgrestError } from '@supabase/supabase-js'
-import { clearLocalAttendance, db, getMeta, replaceAttendanceCache, replaceMosques, replaceParticipants, setMeta } from './db'
+import { clearLocalAttendance, db, getMeta, purgeLocalParticipant, replaceAttendanceCache, replaceMosques, replaceParticipants, setMeta } from './db'
 import { supabase } from './supabase'
 import type { Campaign, DateRange, Mosque, Participant, Profile, Role } from './types'
 
@@ -90,6 +90,13 @@ export async function undoAttendance(participantId: string, date: string): Promi
   }
   await clearLocalAttendance(db, participantId, date)
   return result
+}
+
+/** حذف طفل نهائيًا مع كل سجل حضوره (يحتاج إنترنت). لا رجوع فيه، لكن بياناته تُحفظ في سجل التدقيق. */
+export async function deleteParticipant(participantId: string): Promise<{ attendanceDeleted: number }> {
+  const r = check(await supabase.rpc('delete_participant', { p_participant_id: participantId })) as { attendance_deleted?: number } | null
+  await purgeLocalParticipant(db, participantId)
+  return { attendanceDeleted: r?.attendance_deleted ?? 0 }
 }
 
 export interface SimilarChild {

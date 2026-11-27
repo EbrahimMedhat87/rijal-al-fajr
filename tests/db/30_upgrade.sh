@@ -21,6 +21,7 @@ insert into public.attendance (campaign_id, participant_id, attendance_date, rec
 select (select id from public.campaigns limit 1), (select id from public.participants where name='1 آدم فرج'), public.campaign_today(), (select user_id from public.profiles limit 1), gen_random_uuid();
 SQL
 $P -d "$DB" -f ../../supabase/migrations/0006_child_numbers_undo.sql
+$P -d "$DB" -f ../../supabase/migrations/0007_delete_participant.sql
 psql -X -q -t -A -d "$DB" <<'SQL' > /tmp/upg.txt
 select m.name||'|'||p.name||'|'||p.child_no from public.participants p join public.mosques m on m.id=p.mosque_id order by m.name, p.child_no;
 select 'attendance_kept:'||count(*) from public.attendance a join public.participants p on p.id=a.participant_id where p.name='آدم فرج' and a.status='valid';
