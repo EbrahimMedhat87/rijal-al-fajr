@@ -696,4 +696,81 @@ update public.participants set active = false where id = 'eeeeeeee-0000-4000-800
 select t.expect((select active from public.participants where id = 'eeeeeeee-0000-4000-8000-0000000000e6') = false, 'تكرار قديم يمكن إيقافه (الفحص يعمل فقط عند تغيير الاسم/المسجد)');
 select t.logout();
 
+-- ---------------------------------------------------------------------------
+-- 19) تطبيع الأسماء + حذف كل أطفال مسجد + إزالة منظم
+-- ---------------------------------------------------------------------------
+select t.expect(public.norm_ar('آدم محمد أحمد') = public.norm_ar('أدم محمد احمد'), 'آدم محمد أحمد = أدم محمد احمد (الهمزات لا تفرق)');
+select t.expect(public.norm_ar('عبد الرحمن') = public.norm_ar('عبدالرحمن'), 'عبد الرحمن = عبدالرحمن');
+select t.expect(public.norm_ar('مؤمن') = public.norm_ar('مومن') and public.norm_ar('هائل') = public.norm_ar('هايل'), 'ؤ=و و ئ=ي');
+select t.expect(public.norm_ar('أحمد عبد الله') <> public.norm_ar('أحمد عبد'), 'أسماء مختلفة تبقى مختلفة');
+select t.expect(public.norm_ar('محمّد') = public.norm_ar('محمد'), 'التشكيل لا يفرق');
+
+-- مسجد جديد بأطفال وحضور
+insert into public.mosques (name) values ('مسجد للحذف');
+create temp table mdel as select id from public.mosques where name = 'مسجد للحذف';
+grant select on mdel to authenticated;
+select t.login(t.uid('owner@x.test'));
+select public.add_participant('ffffffff-0000-4000-8000-0000000000f1', 'حذف جماعي أ', (select id from mdel));
+select public.add_participant('ffffffff-0000-4000-8000-0000000000f2', 'حذف جماعي ب', (select id from mdel));
+select public.add_participant('ffffffff-0000-4000-8000-0000000000f3', 'حذف جماعي ج', (select id from mdel));
+select public.record_attendance('00000000-0000-0000-0000-00000000f001', 'ffffffff-0000-4000-8000-0000000000f1', public.campaign_today(), now());
+select public.record_attendance('00000000-0000-0000-0000-00000000f002', 'ffffffff-0000-4000-8000-0000000000f2', public.campaign_today(), now());
+select public.undo_attendance('ffffffff-0000-4000-8000-0000000000f2', public.campaign_today(), 'اختبار');
+select t.logout();
+
+select t.login(t.uid('admin@x.test'));
+select t.expect_err($$select public.delete_mosque_children((select id from mdel), 'مسجد للحذف', false)$$, 'ERR_NOT_AUTHORIZED', 'المشرف لا يحذف أطفال مسجد كامل');
+select t.logout();
+select t.login(t.uid('owner@x.test'));
+select t.expect((select (public.delete_mosque_children((select id from mdel)))->>'children') = '3', 'المعاينة (dry run) تعدّ الأطفال');
+select t.expect((select (public.delete_mosque_children((select id from mdel)))->>'attendance_valid') = '1' and (select (public.delete_mosque_children((select id from mdel)))->>'attendance_void') = '1', 'المعاينة تعدّ الحضور الصالح والمُبطَل');
+select t.expect((select count(*) from public.participants where mosque_id = (select id from mdel)) = 3, 'المعاينة لا تحذف شيئًا');
+select t.expect_err($$select public.delete_mosque_children((select id from mdel), 'اسم غلط', false)$$, 'ERR_CONFIRM_MISMATCH', 'اسم التأكيد الغلط يمنع الحذف');
+select t.expect_err($$select public.delete_mosque_children((select id from mdel), null, false)$$, 'ERR_CONFIRM_MISMATCH', 'بدون اسم التأكيد لا حذف');
+select t.expect_err($$select public.delete_mosque_children('00000000-0000-0000-0000-00000000dead', 'x', false)$$, 'ERR_MOSQUE_NOT_FOUND', 'مسجد غير موجود');
+select t.expect((select (public.delete_mosque_children((select id from mdel), '  مسجد للحذف ', false))->>'status') = 'deleted', 'الحذف الفعلي بعد تأكيد الاسم');
+select t.expect((select count(*) from public.participants where mosque_id = (select id from mdel)) = 0, 'كل أطفال المسجد اختفوا');
+select t.expect((select count(*) from public.attendance where participant_id in ('ffffffff-0000-4000-8000-0000000000f1','ffffffff-0000-4000-8000-0000000000f2')) = 0, 'وكل حضورهم');
+select t.expect((select count(*) from public.mosques where id = (select id from mdel)) = 1, 'المسجد نفسه باقٍ');
+select t.expect((select jsonb_array_length(details->'snapshot') from public.audit_log where action = 'mosque.delete_children' and entity_id = (select id::text from mdel)) = 3, 'التدقيق يحفظ قائمة الأطفال المحذوفين');
+select t.expect((select count(*) from public.participants where mosque_id = (select ma from mq)) > 0, 'مساجد أخرى لم تتأثر');
+select public.add_participant('ffffffff-0000-4000-8000-0000000000f4', 'بعد الحذف الجماعي', (select id from mdel));
+select t.expect((select child_no from public.participants where id = 'ffffffff-0000-4000-8000-0000000000f4') = 1, 'الترقيم يبدأ من 1 من جديد بعد الحذف الكامل');
+select t.logout();
+
+-- إزالة منظم
+select t.login(t.uid('owner@x.test'));
+select t.expect_err($$select public.owner_remove_user(auth.uid())$$, 'ERR_INVALID_INPUT', 'المالك لا يزيل نفسه');
+select t.expect_err($$select public.owner_remove_user('00000000-0000-0000-0000-00000000dead')$$, 'ERR_USER_NOT_FOUND', 'منظم غير موجود');
+select t.logout();
+select t.login(t.uid('admin@x.test'));
+select t.expect_err($$select public.owner_remove_user((select user_id from public.profiles where display_name = 'مسجل 2'))$$, 'ERR_NOT_AUTHORIZED', 'المشرف لا يزيل منظمين');
+select t.logout();
+
+select t.logout();
+insert into auth.users (email) values ('fresh@x.test'), ('worker@x.test');
+select t.login(t.uid('owner@x.test'));
+select public.owner_upsert_user('fresh@x.test', 'منظم جديد', 'admin');
+select public.owner_upsert_user('worker@x.test', 'منظم له سجل', 'recorder');
+select public.owner_set_user_mosques(t.uid('fresh@x.test'), array[(select ma from mq)]);
+select t.expect((select public.owner_remove_user(t.uid('fresh@x.test'))->>'status') = 'deleted', 'منظم بلا سجل: يُحذف حسابه نهائيًا');
+select t.expect((select count(*) from public.profiles where display_name = 'منظم جديد') = 0, 'اختفى الملف');
+select t.expect((select count(*) from public.audit_log where action = 'user.remove') >= 1, 'الإزالة مسجّلة في التدقيق');
+select t.logout();
+select t.expect((select count(*) from auth.users where email = 'fresh@x.test') = 0, 'وحساب الدخول نفسه اتحذف');
+-- منظم له سجل (سجّل حضورًا): يُوقَف ويفك ربطه بدل الحذف
+select t.login(t.uid('owner@x.test'));
+select public.owner_set_user_mosques(t.uid('worker@x.test'), array[(select ma from mq)]);
+select t.logout();
+select t.login(t.uid('worker@x.test'));
+select public.record_attendance('00000000-0000-0000-0000-00000000f101', (select id from public.participants where mosque_id = (select ma from mq) and active limit 1 offset 7), public.campaign_today(), now());
+select t.logout();
+select t.login(t.uid('owner@x.test'));
+select t.expect((select public.owner_remove_user(t.uid('worker@x.test'))->>'status') = 'deactivated', 'منظم له سجل حضور: يُوقَف ولا يُحذف');
+select t.expect((select count(*) from public.profiles where display_name = 'منظم له سجل' and not active) = 1 and (select count(*) from public.user_mosques where user_id = t.uid('worker@x.test')) = 0, 'موقوف ومفكوك الربط');
+select t.logout();
+select t.login(t.uid('worker@x.test'));
+select t.expect_err($$select public.record_attendance('00000000-0000-0000-0000-00000000f102', (select id from public.participants limit 1), public.campaign_today(), now())$$, 'ERR_NOT_AUTHORIZED', 'المنظم الموقوف لا يستطيع التسجيل');
+select t.logout();
+
 \echo '=== كل اختبارات قاعدة البيانات نجحت ==='

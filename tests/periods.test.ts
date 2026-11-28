@@ -76,3 +76,16 @@ describe('البحث بالعربية', () => {
     expect(normalizeArabic('٣٢')).toBe('32')
   })
 })
+
+describe('تطبيع الأسماء (الهمزات وعبد)', () => {
+  it('آدم محمد أحمد = أدم محمد احمد', () => {
+    expect(normalizeArabic('آدم محمد أحمد')).toBe(normalizeArabic('أدم محمد احمد'))
+    expect(normalizeArabic('إيمان')).toBe(normalizeArabic('ايمان'))
+  })
+  it('ؤ/ئ وعبد الرحمن = عبدالرحمن', () => {
+    expect(normalizeArabic('مؤمن')).toBe(normalizeArabic('مومن'))
+    expect(normalizeArabic('مسئول')).toBe(normalizeArabic('مسيول'))
+    expect(normalizeArabic('عبد الرحمن')).toBe(normalizeArabic('عبدالرحمن'))
+    expect(normalizeArabic('محمد عبد الله')).toBe(normalizeArabic('محمد عبدالله'))
+  })
+})

@@ -54,7 +54,7 @@ const assignNo = (p, moved = false) => {
   p.child_no = n
 }
 server.participants.forEach((p) => assignNo(p))
-const nrm = (s) => s.normalize('NFKC').replace(/[\u064B-\u065F\u0670\u0640]/g, '').replace(/[أإآٱ]/g, 'ا').replace(/ى/g, 'ي').replace(/ة/g, 'ه').toLowerCase().trim().replace(/\s+/g, ' ').split(' ').filter(Boolean)
+const nrm = (s) => s.normalize('NFKC').replace(/[\u064B-\u065F\u0670\u0640]/g, '').replace(/[أإآٱ]/g, 'ا').replace(/ى/g, 'ي').replace(/ة/g, 'ه').replace(/ؤ/g, 'و').replace(/ئ/g, 'ي').toLowerCase().trim().replace(/\s+/g, ' ').replace(/(^| )عبد +/g, '$1عبد').split(' ').filter(Boolean)
 let seq = 0
 function addAtt(pid, date, by = USERS['owner@x.test'].id, op = `seed-${++seq}`) {
   server.attendance.push({ id: `att-${++seq}`, participant_id: pid, attendance_date: date, status: 'valid', recorded_by: by, recorded_at: new Date().toISOString(), client_op_id: op, void_reason: null })
@@ -153,6 +153,29 @@ function handleRpc(name, body, uid) {
     return { status: 200, json: Object.entries(USERS).map(([email, x]) => ({ user_id: x.id, email, display_name: x.name, role: x.role, active: true, created_at: new Date().toISOString(), mosque_ids: server.userMosques[x.id] || [] })) }
   }
   if (name === 'owner_list_pending_users') return { status: 200, json: server.pending }
+  if (name === 'delete_mosque_children') {
+    if (u.role !== 'owner') return { status: 400, json: { message: 'ERR_NOT_AUTHORIZED', code: '42501' } }
+    const m = MOSQUES.find((x) => x.id === body.p_mosque_id)
+    const kids = server.participants.filter((x) => x.mosque_id === m.id)
+    const atts = server.attendance.filter((a) => kids.some((k) => k.id === a.participant_id))
+    const sum = { mosque: m.name, children: kids.length, attendance_valid: atts.filter((a) => a.status === 'valid').length, attendance_void: atts.filter((a) => a.status !== 'valid').length }
+    if (body.p_dry_run) { server.calls.mdry = (server.calls.mdry || 0) + 1; return { status: 200, json: { status: 'dry_run', ...sum } } }
+    if ((body.p_confirm_name || '').trim() !== m.name) return { status: 400, json: { message: 'ERR_CONFIRM_MISMATCH', code: 'P0001' } }
+    server.attendance = server.attendance.filter((a) => !atts.includes(a))
+    server.participants = server.participants.filter((x) => x.mosque_id !== m.id)
+    server.calls.mdel = (server.calls.mdel || 0) + 1
+    return { status: 200, json: { status: 'deleted', ...sum } }
+  }
+  if (name === 'owner_remove_user') {
+    if (u.role !== 'owner') return { status: 400, json: { message: 'ERR_NOT_AUTHORIZED', code: '42501' } }
+    const ent = Object.entries(USERS).find(([, x]) => x.id === body.p_user_id)
+    if (!ent) return { status: 400, json: { message: 'ERR_USER_NOT_FOUND', code: 'P0002' } }
+    server.calls.rm = (server.calls.rm || 0) + 1
+    const hist = server.attendance.some((a) => a.recorded_by === body.p_user_id)
+    if (hist) { server.deactivated = (server.deactivated || []).concat(body.p_user_id); return { status: 200, json: { status: 'deactivated' } } }
+    delete USERS[ent[0]]
+    return { status: 200, json: { status: 'deleted' } }
+  }
   if (name === 'owner_reject_signup') { server.pending = server.pending.filter((x) => x.user_id !== body.p_user_id); return { status: 200, json: null } }
   if (name === 'owner_upsert_user') {
     const pend = server.pending.find((x) => x.email === body.p_email)
@@ -537,7 +560,7 @@ async function login(page, email) {
     'سجل الغياب - أسرة الفجر - مسجد الرحمة',
     'الاسم م',
     '✓ ✓ ✓  علي حسن محمود  ١',
-    '✗ ✓ ✓  سعيد عبد الله  ٢',
+    '✗ ✓ ✓  سعيد عبد الله حسن  ٢',
     '3- علي  حسن محمود',
     'إبراهيم',
     'احمد',
@@ -551,7 +574,7 @@ async function login(page, email) {
   const prevItems = await page.locator('ul[aria-label="معاينة الأسماء"] li').evaluateAll((els) => els.map((e) => ({ t: e.innerText.replace(/\s+/g, ' ').trim(), on: e.querySelector('input').checked })))
   console.log('   معاينة الاستيراد:', JSON.stringify(prevItems))
   const byName = (n) => prevItems.find((x) => x.t.startsWith(n))
-  check('المعاينة: الجدد محددون (علي، سعيد، ياسين)', byName('علي حسن محمود')?.on && byName('سعيد عبد الله')?.on && byName('ياسين أشرف')?.on)
+  check('المعاينة: الجدد محددون (علي، سعيد، ياسين)', byName('علي حسن محمود')?.on && byName('سعيد عبد الله حسن')?.on && byName('ياسين أشرف')?.on)
   check('المعاينة: "إبراهيم" موجود بالفعل → غير محدد', byName('إبراهيم') && !byName('إبراهيم').on && byName('إبراهيم').t.includes('موجود بالفعل'))
   check('المعاينة: "احمد" عند مسجد آخر → غير محدد مع اسم المسجد', byName('احمد') && !byName('احمد').on && byName('احمد').t.includes('مسجد النور'))
   check('المعاينة: التكرار داخل القائمة يُكتشف ويُستبعد (علي حسن محمود مرتين)', prevItems.length === 6 && prevItems.filter((x) => x.t.includes('مكرر في القائمة') && !x.on).length === 1, JSON.stringify(prevItems))
@@ -564,7 +587,7 @@ async function login(page, email) {
   await sleep(600)
   const added = server.participants.slice(nBefore)
   check('الاستيراد: 3 أطفال أُضيفوا في طلب واحد لمسجد الرحمة', added.length === 3 && added.every((x) => x.mosque_id === MB) && server.bulkCalls === 1, JSON.stringify(added))
-  check('الاستيراد: الأسماء نظيفة (بلا أرقام/علامات)', added.map((x) => x.name).sort().join('|') === ['سعيد عبد الله', 'علي حسن محمود', 'ياسين أشرف'].sort().join('|'), added.map((x) => x.name).join('|'))
+  check('الاستيراد: الأسماء نظيفة (بلا أرقام/علامات)', added.map((x) => x.name).sort().join('|') === ['سعيد عبد الله حسن', 'علي حسن محمود', 'ياسين أشرف'].sort().join('|'), added.map((x) => x.name).join('|'))
   check('القائمة تحدّثت: 4 أطفال في مسجد الرحمة', (await page.locator('main ul li').count()) === 4, (await page.locator('main ul li').evaluateAll((e) => e.map((x) => x.innerText.replace(/\s+/g, ' ')))).join('|'))
 
   // رفع ملف CSV
@@ -577,13 +600,13 @@ async function login(page, email) {
   // استيراد اسم يشبه طفلًا في مسجد آخر: الفحص من الخادم + نقله بدل تكراره
   await page.click('button:has-text("استيراد")'); await page.waitForSelector('textarea')
   await page.selectOption('[role=dialog] select', MA)
-  await page.fill('textarea', 'سعيد عبد الله الجمال\nفارس نادر عادل')
+  await page.fill('textarea', 'سعيد عبد الله حسن الجمال\nفارس نادر عادل')
   await page.click('button:has-text("معاينة")')
   await page.waitForSelector('ul[aria-label="معاينة الأسماء"]')
   const simRows = await page.locator('ul[aria-label="معاينة الأسماء"] li').evaluateAll((els) => els.map((e) => ({ t: e.innerText.replace(/\s+/g, ' ').trim(), on: e.querySelector('input').checked })))
-  check('الاستيراد: الاسم المشابه (من الخادم) يظهر "يشبه طفلًا في مسجد آخر" وغير محدد، والجديد محدد', simRows[0].t.includes('يشبه طفلًا في مسجد آخر') && simRows[0].t.includes('سعيد عبد الله') && !simRows[0].on && simRows[1].on, JSON.stringify(simRows))
+  check('الاستيراد: الاسم المشابه (من الخادم) يظهر "يشبه طفلًا في مسجد آخر" وغير محدد، والجديد محدد', simRows[0].t.includes('يشبه طفلًا في مسجد آخر') && simRows[0].t.includes('سعيد عبد الله حسن') && !simRows[0].on && simRows[1].on, JSON.stringify(simRows))
   await page.screenshot({ path: `${SHOTS}/10e-import-similar.png` })
-  const sKid = server.participants.find((x) => x.name === 'سعيد عبد الله')
+  const sKid = server.participants.find((x) => x.name === 'سعيد عبد الله حسن')
   await page.click('ul[aria-label="معاينة الأسماء"] li:first-child button:has-text("نقله هنا")')
   await page.click('button:has-text("تأكيد: انقله من")'); await sleep(900)
   check('الاستيراد: النقل بدل التكرار ينقل الطفل لمسجد النور ويُستبعد من الإضافة', sKid.mosque_id === MA && (await page.locator('text=تم نقله إلى هذا المسجد').count()) === 1 && (await page.locator('button:has-text("إضافة 1 طفل")').count()) === 1)
@@ -746,6 +769,41 @@ async function login(page, email) {
   check('بعد الحذف: يرجع لقائمة الأطفال والطفل غير موجود فيها', new URL(page.url()).pathname === '/participants' && (await page.locator('main li:has-text("خالد")').count()) === 0)
   check('الحذف مسح الطفل محليًا من الجهاز', (await page.evaluate((id) => new Promise((res) => { const r = indexedDB.open('rijal-al-fajr'); r.onsuccess = () => { const q = r.result.transaction('participants').objectStore('participants').get(id); q.onsuccess = () => res(!!q.result) } }), delKid.id)) === false)
   await page.screenshot({ path: `${SHOTS}/12d-after-delete.png` })
+
+  // ---- 10د) المالك: حذف كل أطفال مسجد + إزالة مشرف
+  await page.click('button[aria-label="القائمة"]')
+  page.once('dialog', (d) => d.accept())
+  await page.click('button:has-text("تسجيل الخروج")')
+  await page.waitForURL(/login/)
+  await login(page, 'owner@x.test'); await sleep(1000)
+  await page.goto(BASE + '/admin'); await page.waitForSelector('text=إعدادات المبادرة'); await sleep(800)
+  const mbKids = server.participants.filter((x) => x.mosque_id === MB).length
+  const aKids = server.participants.filter((x) => x.mosque_id === MA).length
+  check('المالك يرى زر حذف أطفال لكل مسجد', (await page.locator('button[aria-label^="حذف كل أطفال"]').count()) === 2)
+  await page.click('button[aria-label="حذف كل أطفال مسجد الرحمة"]'); await page.waitForSelector('[role=dialog] input'); await sleep(500)
+  const mdTxt = await page.locator('[role=dialog]').innerText()
+  check('المعاينة تعرض عدد الأطفال الصحيح قبل الحذف', mdTxt.includes('هيتحذف ' + mbKids + ' طفل') && mdTxt.includes('مفيش رجوع') && server.calls.mdry === 1 && !server.calls.mdel, mdTxt.slice(0, 120))
+  check('زر الحذف معطّل قبل كتابة اسم المسجد', await page.locator('[role=dialog] button:has-text("احذف كل الأطفال")').isDisabled())
+  await page.locator('[role=dialog] input').fill('مسجد النور'); await sleep(150)
+  check('اسم مسجد آخر لا يفعّل الزر', await page.locator('[role=dialog] button:has-text("احذف كل الأطفال")').isDisabled())
+  await page.screenshot({ path: `${SHOTS}/12e-delete-mosque.png` })
+  await page.locator('[role=dialog] input').fill('مسجد الرحمة'); await sleep(150)
+  await page.click('[role=dialog] button:has-text("احذف كل الأطفال")'); await sleep(1500)
+  check('حذف المسجد: أطفال الرحمة اختفوا وأطفال النور لسه موجودين', server.calls.mdel === 1 && server.participants.filter((x) => x.mosque_id === MB).length === 0 && server.participants.filter((x) => x.mosque_id === MA).length === aKids)
+  check('بعد الحذف المسجد نفسه لسه موجود في القائمة', (await page.locator('main').innerText()).includes('مسجد الرحمة'))
+  check('الحذف مسح أطفال المسجد محليًا', (await page.evaluate((mb) => new Promise((res) => { const r = indexedDB.open('rijal-al-fajr'); r.onsuccess = () => { const q = r.result.transaction('participants').objectStore('participants').getAll(); q.onsuccess = () => res(q.result.filter((p) => p.mosque_id === mb).length) } }), MB)) === 0)
+  // إزالة مشرف
+  check('زر الإزالة غير ظاهر للمالك نفسه', (await page.locator('button[aria-label="إزالة المالك"]').count()) === 0)
+  await page.click('button[aria-label="إزالة مشرف النور"]'); await page.waitForSelector('[role=dialog]')
+  check('نافذة الإزالة تشرح الحذف/الإيقاف', (await page.locator('[role=dialog]').innerText()).includes('حسابه بيتوقف'))
+  await page.screenshot({ path: `${SHOTS}/12f-remove-user.png` })
+  await page.click('[role=dialog] button:has-text("أيوه")'); await sleep(1200)
+  check('إزالة مشرف: تمت وتوقف الحساب (له سجلات) أو اتحذف', server.calls.rm === 1)
+  const afterRm = await page.locator('main').innerText()
+  check('بعد الإزالة النافذة اتقفلت', (await page.locator('[role=dialog]').count()) === 0 && afterRm.length > 0)
+  await page.click('button[aria-label="إزالة مسجل 1"]'); await page.waitForSelector('[role=dialog]')
+  await page.click('[role=dialog] button:has-text("إلغاء")'); await sleep(200)
+  check('إلغاء الإزالة لا ينفّذ شيئًا', server.calls.rm === 1)
 
   // ---- 11) لا أخطاء JS غير متوقعة
   const bad = errors.filter((e) => !/Failed to load resource|net::ERR|Failed to fetch|NetworkError|ERR_INTERNET_DISCONNECTED/i.test(e))

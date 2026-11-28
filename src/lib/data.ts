@@ -99,6 +99,27 @@ export async function deleteParticipant(participantId: string): Promise<{ attend
   return { attendanceDeleted: r?.attendance_deleted ?? 0 }
 }
 
+export interface MosqueDeletePreview {
+  mosque: string
+  children: number
+  attendance_valid: number
+  attendance_void: number
+}
+
+/** معاينة (بدون حذف): كام طفل وكام سجل حضور هيتحذفوا من المسجد */
+export async function previewMosqueChildrenDelete(mosqueId: string): Promise<MosqueDeletePreview> {
+  return check(await supabase.rpc('delete_mosque_children', { p_mosque_id: mosqueId, p_confirm_name: null, p_dry_run: true })) as MosqueDeletePreview
+}
+
+/** حذف كل أطفال مسجد نهائيًا (المالك فقط، يحتاج كتابة اسم المسجد للتأكيد). بياناتهم تُحفظ في سجل التدقيق. */
+export async function deleteMosqueChildren(mosqueId: string, confirmName: string): Promise<MosqueDeletePreview> {
+  const r = check(await supabase.rpc('delete_mosque_children', { p_mosque_id: mosqueId, p_confirm_name: confirmName, p_dry_run: false })) as MosqueDeletePreview
+  const local = await db.participants.where('mosque_id').equals(mosqueId).primaryKeys().catch(() => [] as string[])
+  for (const id of local) await purgeLocalParticipant(db, id as string)
+  await refreshParticipants().catch(() => undefined)
+  return r
+}
+
 export interface SimilarChild {
   idx: number
   participant_id: string
@@ -266,6 +287,12 @@ export async function listPendingUsers(): Promise<PendingUser[]> {
 
 export async function rejectSignup(userId: string): Promise<void> {
   check(await supabase.rpc('owner_reject_signup', { p_user_id: userId }))
+}
+
+/** إزالة مشرف/منظم: يُحذف نهائيًا لو بلا سجل، وإلا يُوقَف حسابه (حتى لا تضيع سجلات الحضور اللي سجّلها) */
+export async function removeUser(userId: string): Promise<'deleted' | 'deactivated'> {
+  const r = check(await supabase.rpc('owner_remove_user', { p_user_id: userId })) as { status: 'deleted' | 'deactivated' }
+  return r.status
 }
 
 export async function upsertUser(email: string, displayName: string, role: Role, active: boolean): Promise<string> {

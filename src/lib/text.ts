@@ -6,10 +6,13 @@ export function normalizeArabic(s: string): string {
     .replace(/[أإآٱ]/g, 'ا')
     .replace(/ى/g, 'ي')
     .replace(/ة/g, 'ه')
+    .replace(/ؤ/g, 'و')
+    .replace(/ئ/g, 'ي')
     .replace(/[٠-٩]/g, (d) => String('٠١٢٣٤٥٦٧٨٩'.indexOf(d)))
     .toLowerCase()
     .trim()
     .replace(/\s+/g, ' ')
+    .replace(/(^| )عبد +/g, '$1عبد') // "عبد الرحمن" = "عبدالرحمن"
 }
 
 /** هل النص كله أرقام (عربية أو إنجليزية)؟ — يعني أن المستخدم يبحث برقم الطفل */

@@ -17,6 +17,8 @@ const MESSAGES: Record<string, string> = {
   ERR_INVALID_ROLE: 'دور غير صالح',
   ERR_INVALID_INPUT: 'بيانات غير صالحة',
   ERR_DUPLICATE_NAME: 'الاسم موجود بالفعل في هذا المسجد — لو طفل آخر بنفس الاسم أضف حرفًا مميزًا (مثال: محمد أحمد - ع)',
+  ERR_USER_NOT_FOUND: 'المستخدم غير موجود',
+  ERR_CONFIRM_MISMATCH: 'اسم المسجد المكتوب غير مطابق — اكتبه زي ما هو بالظبط',
   ERR_START_DATE_AFTER_ATTENDANCE: 'لا يمكن تأخير تاريخ البداية بعد سجلات حضور موجودة',
   ERR_CHILD_NOT_SAVED: 'الطفل نفسه لم يُقبَل من الخادم، فلم يُرسَل حضوره',
   ERR_UNKNOWN: 'خطأ غير متوقع'

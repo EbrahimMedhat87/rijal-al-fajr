@@ -23,6 +23,7 @@ SQL
 $P -d "$DB" -f ../../supabase/migrations/0006_child_numbers_undo.sql
 $P -d "$DB" -f ../../supabase/migrations/0007_delete_participant.sql
 $P -d "$DB" -f ../../supabase/migrations/0008_unique_names.sql
+$P -d "$DB" -f ../../supabase/migrations/0009_mosque_cleanup_remove_user.sql
 psql -X -q -t -A -d "$DB" <<'SQL' > /tmp/upg.txt
 select m.name||'|'||p.name||'|'||p.child_no from public.participants p join public.mosques m on m.id=p.mosque_id order by m.name, p.child_no;
 select 'attendance_kept:'||count(*) from public.attendance a join public.participants p on p.id=a.participant_id where p.name='آدم فرج' and a.status='valid';

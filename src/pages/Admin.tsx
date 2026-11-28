@@ -3,7 +3,7 @@ import { Navigate } from 'react-router-dom'
 import { Badge, Banner, Button, Card, Field, Modal, PageTitle, Spinner, inputClass } from '../components/ui'
 import { useAppData } from '../lib/app-data'
 import { canManage, useSession } from '../lib/auth'
-import { createMosque, fetchAudit, fetchProfileNames, listPendingUsers, listUsers, refreshMosques, rejectSignup, setUserMosques, updateCampaign, updateMosque, upsertUser, type AuditRow, type PendingUser, type UserRow } from '../lib/data'
+import { createMosque, deleteMosqueChildren, fetchAudit, fetchProfileNames, listPendingUsers, listUsers, previewMosqueChildrenDelete, refreshMosques, rejectSignup, removeUser, setUserMosques, updateCampaign, updateMosque, upsertUser, type AuditRow, type MosqueDeletePreview, type PendingUser, type UserRow } from '../lib/data'
 import { formatDateTimeInTz } from '../lib/dates'
 import { errorToArabic } from '../lib/errors'
 import { useOnline } from '../lib/hooks'
@@ -14,6 +14,10 @@ import type { Role } from '../lib/types'
 const ROLE_AR: Record<Role, string> = { owner: 'مالك', admin: 'مشرف', recorder: 'مسجِّل' }
 const ACTION_AR: Record<string, string> = {
   'attendance.void': 'إبطال حضور',
+  'participant.delete': 'حذف طفل نهائيًا',
+  'participant.transfer': 'نقل طفل لمسجد آخر',
+  'mosque.delete_children': 'حذف كل أطفال مسجد',
+  'user.remove': 'إزالة منظم/مشرف',
   'participants.insert': 'إضافة طفل',
   'participants.update': 'تعديل طفل',
   'profiles.insert': 'إضافة منظم',
@@ -42,6 +46,8 @@ export default function Admin() {
   const [editUser, setEditUser] = useState<Partial<UserRow> & { isNew?: boolean } | null>(null)
   const [editMosque, setEditMosque] = useState<{ id?: string; name: string; active: boolean } | null>(null)
   const [formError, setFormError] = useState<string | null>(null)
+  const [delMosque, setDelMosque] = useState<{ id: string; name: string; preview: MosqueDeletePreview | null; confirm: string } | null>(null)
+  const [removing, setRemoving] = useState<UserRow | null>(null)
   const [busy, setBusy] = useState(false)
 
   const [cName, setCName] = useState('')
@@ -134,6 +140,50 @@ export default function Admin() {
     }
   }
 
+  const openDelMosque = async (id: string, name: string) => {
+    setDelMosque({ id, name, preview: null, confirm: '' })
+    setFormError(null)
+    try {
+      const preview = await previewMosqueChildrenDelete(id)
+      setDelMosque((d) => (d && d.id === id ? { ...d, preview } : d))
+    } catch (err) {
+      setFormError(errorToArabic(err))
+    }
+  }
+
+  const doDelMosque = async (e: FormEvent) => {
+    e.preventDefault()
+    if (!delMosque) return
+    setBusy(true)
+    setFormError(null)
+    try {
+      const r = await deleteMosqueChildren(delMosque.id, delMosque.confirm)
+      toast('success', `تم حذف ${r.children} طفل من ${r.mosque}`)
+      setDelMosque(null)
+      await load()
+    } catch (err) {
+      setFormError(errorToArabic(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const doRemoveUser = async () => {
+    if (!removing) return
+    setBusy(true)
+    setFormError(null)
+    try {
+      const st = await removeUser(removing.user_id)
+      toast('success', st === 'deleted' ? `تم حذف ${removing.display_name} نهائيًا` : `تم إيقاف ${removing.display_name} (عنده سجلات فمتحذفش)`)
+      setRemoving(null)
+      await load()
+    } catch (err) {
+      setFormError(errorToArabic(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const saveCampaign = async (e: FormEvent) => {
     e.preventDefault()
     setBusy(true)
@@ -208,7 +258,10 @@ export default function Admin() {
                       <div className="truncate font-semibold text-brand-900">🕌 {m.name}</div>
                       {!m.active && <Badge tone="red">موقوف</Badge>}
                     </div>
-                    <Button variant="secondary" disabled={!online} onClick={() => { setEditMosque({ id: m.id, name: m.name, active: m.active }); setFormError(null) }}>تعديل</Button>
+                    <div className="flex shrink-0 gap-2">
+                      <Button variant="secondary" disabled={!online} onClick={() => { setEditMosque({ id: m.id, name: m.name, active: m.active }); setFormError(null) }}>تعديل</Button>
+                      <Button variant="danger" disabled={!online} aria-label={`حذف كل أطفال ${m.name}`} onClick={() => void openDelMosque(m.id, m.name)}>🗑 الأطفال</Button>
+                    </div>
                   </li>
                 ))}
               </ul>
@@ -236,7 +289,12 @@ export default function Admin() {
                         {u.role === 'owner' ? <Badge tone="blue">كل المساجد</Badge> : u.mosque_ids.length === 0 ? <Badge tone="gold">بدون مسجد</Badge> : u.mosque_ids.map((id) => <Badge key={id} tone="blue">{allMosques.find((m) => m.id === id)?.name ?? '—'}</Badge>)}
                       </div>
                     </div>
-                    <Button variant="secondary" disabled={!online} onClick={() => { setEditUser({ ...u }); setFormError(null) }}>تعديل</Button>
+                    <div className="flex shrink-0 flex-col gap-2">
+                      <Button variant="secondary" disabled={!online} onClick={() => { setEditUser({ ...u }); setFormError(null) }}>تعديل</Button>
+                      {u.role !== 'owner' && u.user_id !== session.userId && (
+                        <Button variant="danger" disabled={!online} aria-label={`إزالة ${u.display_name}`} onClick={() => { setRemoving(u); setFormError(null) }}>إزالة</Button>
+                      )}
+                    </div>
                   </li>
                 ))}
               </ul>
@@ -263,6 +321,40 @@ export default function Admin() {
           </ul>
         )}
       </Card>
+
+      {delMosque && (
+        <Modal title="حذف كل أطفال المسجد" onClose={() => !busy && setDelMosque(null)}>
+          <form onSubmit={doDelMosque} className="space-y-4">
+            {formError && <Banner tone="red">{formError}</Banner>}
+            {!delMosque.preview ? <Spinner /> : (
+              <>
+                <Banner tone="red">
+                  هيتحذف <b>{delMosque.preview.children}</b> طفل من <b>{delMosque.name}</b> مع <b>{delMosque.preview.attendance_valid + delMosque.preview.attendance_void}</b> سجل حضور، وهيختفوا من الترتيب والتقارير. <b>مفيش رجوع من التطبيق</b> (البيانات بتتحفظ في سجل التدقيق بس). المسجد نفسه والمشرفين مش هيتأثروا، والترقيم هيبدأ من 1 تاني.
+                </Banner>
+                <Field label={`اكتب اسم المسجد "${delMosque.name}" للتأكيد`}>
+                  <input className={inputClass} autoFocus value={delMosque.confirm} onChange={(e) => setDelMosque({ ...delMosque, confirm: e.target.value })} />
+                </Field>
+                <Button type="submit" variant="danger" block disabled={busy || !online || delMosque.confirm.trim() !== delMosque.name.trim() || delMosque.preview.children === 0}>
+                  {busy ? 'جارٍ الحذف…' : delMosque.preview.children === 0 ? 'المسجد فاضي' : 'احذف كل الأطفال نهائيًا'}
+                </Button>
+              </>
+            )}
+          </form>
+        </Modal>
+      )}
+
+      {removing && (
+        <Modal title="إزالة منظم" onClose={() => !busy && setRemoving(null)}>
+          <div className="space-y-4">
+            {formError && <Banner tone="red">{formError}</Banner>}
+            <p className="text-sm leading-relaxed text-brand-900">
+              هتتشال <b>{removing.display_name}</b> من التطبيق ومش هيعرف يدخل تاني. لو هو سجّل حضور أو أضاف أطفال قبل كده، حسابه بيتوقف بس (عشان السجلات متضيعش)، ولو معندوش أي سجل بيتحذف خالص.
+            </p>
+            <Button variant="danger" block disabled={busy || !online} onClick={() => void doRemoveUser()}>{busy ? 'جارٍ الإزالة…' : 'أيوه، أزِله'}</Button>
+            <Button variant="secondary" block disabled={busy} onClick={() => setRemoving(null)}>إلغاء</Button>
+          </div>
+        </Modal>
+      )}
 
       {editMosque && (
         <Modal title={editMosque.id ? 'تعديل مسجد' : 'إضافة مسجد'} onClose={() => setEditMosque(null)}>
